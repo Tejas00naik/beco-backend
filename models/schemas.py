@@ -139,13 +139,11 @@ class CustEmailDomainMap(BaseModel):
 @dataclass
 class EmailLog(BaseModel):
     email_log_uuid: str = field(default_factory=lambda: str(uuid4()))
-    group_uuid: Optional[str] = None  # FK to Group - derived from LLM-identified legal entity
+    group_uuids: List[str] = field(default_factory=list)  # Multiple FK links to Group - derived from LLM-identified legal entities
     email_object_file_path: str = ""
     received_at: datetime = field(default_factory=datetime.utcnow)
     sender_mail: str = ""
     original_sender_mail: Optional[str] = None
-    payer_name: Optional[str] = None
-    payee_name: Optional[str] = None
     email_subject: Optional[str] = None
     mailbox_id: Optional[str] = None
 
@@ -168,9 +166,10 @@ class Invoice(BaseModel):
     invoice_uuid: str = field(default_factory=lambda: str(uuid4()))
     payment_advice_uuid: str = ""
     customer_uuid: Optional[str] = None  # FK to Customer - derived per line by LLM
-    invoice_number: str = ""
+    invoice_number: str = ""  # Should be unique within the system
     invoice_date: Optional[date] = None
     booking_amount: Optional[float] = None
+    sap_transaction_id: Optional[str] = None  # SAP transaction ID after reconciliation
     invoice_status: InvoiceStatus = InvoiceStatus.OPEN
 
 
@@ -179,10 +178,11 @@ class OtherDoc(BaseModel):
     other_doc_uuid: str = field(default_factory=lambda: str(uuid4()))
     payment_advice_uuid: str = ""
     customer_uuid: Optional[str] = None  # FK to Customer - derived per line by LLM
-    other_doc_number: str = ""
+    other_doc_number: str = ""  # Should be unique within the system
     other_doc_date: Optional[date] = None
     other_doc_type: OtherDocType = OtherDocType.OTHER
     other_doc_amount: Optional[float] = None
+    sap_transaction_id: Optional[str] = None  # SAP transaction ID after reconciliation
 
 
 @dataclass
@@ -190,10 +190,11 @@ class Settlement(BaseModel):
     settlement_uuid: str = field(default_factory=lambda: str(uuid4()))
     payment_advice_uuid: str = ""
     customer_uuid: Optional[str] = None  # FK to Customer - derived from invoice/other_doc
-    invoice_uuid: Optional[str] = None
-    other_doc_uuid: Optional[str] = None
+    invoice_uuid: Optional[str] = None  # FK to Invoice - exactly one of invoice_uuid or other_doc_uuid must be set
+    other_doc_uuid: Optional[str] = None  # FK to OtherDoc - exactly one of invoice_uuid or other_doc_uuid must be set
     settlement_date: Optional[date] = None
     settlement_amount: Optional[float] = None
+    sap_transaction_id: Optional[str] = None  # SAP transaction ID after reconciliation
     settlement_status: SettlementStatus = SettlementStatus.READY
 
     def __post_init__(self):

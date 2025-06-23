@@ -39,19 +39,22 @@ class MockLLMExtractor:
         
         # In a real implementation, the LLM would analyze the email content
         # and extract these fields. For our mock, we'll simply use the 
-        # pre-generated data as if the LLM had extracted it perfectly.
-        
         # In the new schema, group_uuid is associated with email_log
         # The LLM would determine this based on the legal entity mentioned in the email
         # For mock, we'll use legal_entity_uuid to look up a related group_uuid
         
+        # Convert single group_uuid to list if present, or use group_uuids if available, or empty list if neither exists
+        group_uuids = []
+        if "group_uuids" in email_content:
+            group_uuids = email_content.get("group_uuids")
+        elif "group_uuid" in email_content and email_content.get("group_uuid"):
+            group_uuids = [email_content.get("group_uuid")]
+        
         metadata = {
             "sender_mail": email_content.get("sender_mail"),
             "original_sender_mail": email_content.get("original_sender_mail"),
-            "payer_name": email_content.get("payment_advices", [{}])[0].get("payer_name", ""),
-            "payee_name": email_content.get("payment_advices", [{}])[0].get("payee_name", ""),
             "email_subject": email_content.get("subject", ""),
-            "group_uuid": email_content.get("group_uuid")  # New: group_uuid at email level
+            "group_uuids": group_uuids  # Updated: list of group_uuids at email level
         }
         
         logger.info(f"Extracted metadata for email {email_content.get('email_id')}")

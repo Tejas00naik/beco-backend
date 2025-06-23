@@ -188,8 +188,11 @@ class FirestoreDAO:
             if limit:
                 query = query.limit(limit)
                 
-            docs = query.stream()
-            results = [doc.to_dict() for doc in docs]
+            # Properly handle async iteration of Firestore's AsyncStreamGenerator
+            results = []
+            async for doc in query.stream():
+                results.append(doc.to_dict())
+                
             logger.info(f"Query returned {len(results)} results from {collection}")
             return results
             

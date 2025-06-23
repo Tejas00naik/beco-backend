@@ -50,6 +50,35 @@ except ImportError:
 
 class BatchWorker:
     """Main orchestrator for the email processing batch worker."""
+    
+    async def check_document_exists(self, collection: str, field: str, value: str) -> bool:
+        """
+        Check if a document with the given field value already exists in the collection.
+        
+        Args:
+            collection: Collection name to check in
+            field: Field name to check
+            value: Value to check for
+            
+        Returns:
+            True if document exists, False otherwise
+        """
+        if not value:  # Skip check for empty values
+            return False
+            
+        # Use Firestore query to check if document exists
+        try:
+            # Get documents with the matching field value
+            docs = await self.dao.query_documents(
+                collection,
+                filters=[(field, "==", value)],
+                limit=1
+            )
+            # If any documents are found, the value exists
+            return len(docs) > 0
+        except Exception as e:
+            logger.error(f"Error checking if document exists in {collection}: {str(e)}")
+            return False
 
     def __init__(self, 
                  is_test: bool = False, 
@@ -144,7 +173,7 @@ class BatchWorker:
             # Create email log entry
             email_log = EmailLog(
                 email_log_uuid=email_data["email_id"],
-                group_uuid=metadata.get("group_uuid"),  # Group UUID from LLM metadata
+                group_uuids=metadata.get("group_uuids", []),  # List of Group UUIDs from LLM metadata
                 email_object_file_path=email_data["object_file_path"],
                 received_at=datetime.fromisoformat(email_data["received_at"]),
                 sender_mail=email_data["sender_mail"].lower(),
@@ -152,10 +181,6 @@ class BatchWorker:
                 email_subject=metadata.get("email_subject"),
                 mailbox_id=self.mailbox_id
             )
-            
-            # Add additional metadata from LLM
-            email_log.payer_name = metadata.get("payer_name")
-            email_log.payee_name = metadata.get("payee_name")
             
             # Save email log to Firestore
             await self.dao.add_document("email_log", email_log.email_log_uuid, email_log)
@@ -199,12 +224,9 @@ class BatchWorker:
                 await self.dao.add_document("email_processing_log", doc_id, processing_log)
             except Exception as log_error:
                 logger.error(f"Failed to create error log: {str(log_error)}")
-            
-            self.errors += 1
-            return False
 
     async def process_payment_advice(self, email_log_uuid: str, pa_data: Dict[str, Any], 
-                                   email_data: Dict[str, Any], pa_index: int) -> None:
+                               email_data: Dict[str, Any], pa_index: int) -> None:
         """
         Process a single payment advice and create all related records.
         
@@ -241,40 +263,60 @@ class BatchWorker:
             # Create invoice records
             invoice_uuids = []
             for i, inv_data in enumerate(invoices_data):
+                invoice_number = inv_data.get("invoice_number")
+                
+                # Check if invoice number already exists (uniqueness constraint)
+                if invoice_number:
+                    invoice_exists = await self.check_document_exists("invoice", "invoice_number", invoice_number)
+                    if invoice_exists:
+                        logger.warning(f"Invoice with number {invoice_number} already exists - skipping")
+                        continue
+                
                 invoice_uuid = str(uuid.uuid4())
                 invoice = Invoice(
                     invoice_uuid=invoice_uuid,
                     payment_advice_uuid=advice_uuid,
                     customer_uuid=inv_data.get("customer_uuid"),  # Customer UUID from LLM per invoice
-                    invoice_number=inv_data.get("invoice_number"),
+                    invoice_number=invoice_number,
                     invoice_date=inv_data.get("invoice_date"),
                     booking_amount=inv_data.get("booking_amount"),
-                    invoice_status=InvoiceStatus.OPEN
+                    invoice_status=InvoiceStatus.OPEN,
+                    sap_transaction_id=None  # Will be set after successful SAP reconciliation
                 )
                 
                 # Save invoice to Firestore
                 await self.dao.add_document("invoice", invoice_uuid, invoice)
                 invoice_uuids.append(invoice_uuid)
-                logger.info(f"Created invoice {invoice.invoice_uuid}")
+                logger.info(f"Created invoice {invoice.invoice_uuid} with number {invoice_number}")
             
             # Create other document records
             other_doc_uuids = []
             for i, doc_data in enumerate(other_docs_data):
+                other_doc_number = doc_data.get("other_doc_number")
+                
+                # Check if other doc number already exists (uniqueness constraint)
+                if other_doc_number:
+                    other_doc_exists = await self.check_document_exists("other_doc", "other_doc_number", other_doc_number)
+                    if other_doc_exists:
+                        logger.warning(f"Other document with number {other_doc_number} already exists - skipping")
+                        continue
+                
                 other_doc_uuid = str(uuid.uuid4())
                 other_doc = OtherDoc(
                     other_doc_uuid=other_doc_uuid,
                     payment_advice_uuid=advice_uuid,
                     customer_uuid=doc_data.get("customer_uuid"),  # Customer UUID from LLM per other_doc
-                    other_doc_number=doc_data.get("other_doc_number"),
+                    other_doc_number=other_doc_number,
                     other_doc_date=doc_data.get("other_doc_date"),
                     other_doc_type=doc_data.get("other_doc_type", OtherDocType.OTHER),
-                    other_doc_amount=doc_data.get("other_doc_amount")
+                    other_doc_amount=doc_data.get("other_doc_amount"),
+                    sap_transaction_id=None  # Will be set after successful SAP reconciliation
                 )
                 
                 # Save other doc to Firestore
                 await self.dao.add_document("other_doc", other_doc_uuid, other_doc)
                 other_doc_uuids.append(other_doc_uuid)
-                logger.info(f"Created other doc {other_doc.other_doc_uuid}")
+                logger.info(f"Created other doc {other_doc.other_doc_uuid} with number {other_doc_number}")
             
             # Process settlements and call SAP
             settlement_idx = 0
@@ -291,10 +333,11 @@ class BatchWorker:
                         other_doc_uuid=None,
                         settlement_date=settlements_data[i].get("settlement_date"),
                         settlement_amount=settlements_data[i].get("settlement_amount"),
-                        settlement_status=SettlementStatus.READY
+                        settlement_status=SettlementStatus.READY,
+                        sap_transaction_id=None  # Will be set after successful SAP reconciliation
                     )
                     
-                    # Save settlement to Firestore (using deterministic ID)
+                    # Save settlement to Firestore
                     await self.dao.create_settlement(settlement)
                     logger.info(f"Created settlement {settlement.settlement_uuid}")
                     
@@ -304,7 +347,7 @@ class BatchWorker:
             
             # Create settlements for other documents
             for i, other_doc_uuid in enumerate(other_doc_uuids):
-                if i + len(invoices_data) < len(settlements_data):
+                if i + len(invoice_uuids) < len(settlements_data):
                     settlement_uuid = str(uuid.uuid4())
                     settlement = Settlement(
                         settlement_uuid=settlement_uuid,
@@ -312,21 +355,20 @@ class BatchWorker:
                         customer_uuid=other_docs_data[i].get("customer_uuid"),  # Customer UUID from other_doc
                         invoice_uuid=None,
                         other_doc_uuid=other_doc_uuid,
-                        settlement_date=settlements_data[i + len(invoices_data)].get("settlement_date"),
-                        settlement_amount=settlements_data[i + len(invoices_data)].get("settlement_amount"),
-                        settlement_status=SettlementStatus.READY
+                        settlement_date=settlements_data[i + len(invoice_uuids)].get("settlement_date"),
+                        settlement_amount=settlements_data[i + len(invoice_uuids)].get("settlement_amount"),
+                        settlement_status=SettlementStatus.READY,
+                        sap_transaction_id=None  # Will be set after successful SAP reconciliation
                     )
                     
-                    # Save settlement to Firestore (using deterministic ID)
+                    # Save settlement to Firestore
                     await self.dao.create_settlement(settlement)
                     logger.info(f"Created settlement {settlement.settlement_uuid}")
                     
                     # Call SAP endpoint
                     await self.call_sap_reconciliation(payment_advice, settlement)
                     settlement_idx += 1
-                # Call SAP endpoint
-                await self.call_sap_reconciliation(payment_advice, settlement)
-                settlement_idx += 1
+                    
         except Exception as e:
             logger.error(f"Error processing payment advice {pa_index} from email {email_log_uuid}: {str(e)}")
             self.errors += 1

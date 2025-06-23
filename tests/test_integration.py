@@ -15,7 +15,7 @@ from src.main import BatchWorker
 from src.mocks.email_reader import MockEmailReader
 from src.mocks.llm_extractor import MockLLMExtractor
 from src.mocks.sap_caller import MockSapCaller
-from models.schemas import BatchRunStatus
+from models.schemas import BatchRunStatus, Invoice, OtherDoc, InvoiceStatus, OtherDocType, Settlement, SettlementStatus
 
 
 @pytest.fixture
@@ -131,9 +131,10 @@ async def test_end_to_end_flow(integration_batch_worker):
     assert "email_log" in worker.dao._documents
     assert len(worker.dao._documents["email_log"]) > 0
     
-    # Verify email logs have group_uuid (new schema)
+    # Verify email logs have group_uuids (updated schema v1.3)
     email_log = list(worker.dao._documents["email_log"].values())[0]
-    assert hasattr(email_log, 'group_uuid')
+    assert hasattr(email_log, 'group_uuids')
+    assert isinstance(email_log.group_uuids, list)
     
     # Verify email processing logs were created
     assert "email_processing_log" in worker.dao._documents
@@ -187,6 +188,114 @@ async def test_end_to_end_flow(integration_batch_worker):
         if log.email_log_uuid == email_log_id
     ]
     assert len(processing_logs_for_email) > 0
+
+
+@pytest.mark.asyncio
+async def test_uniqueness_constraints(integration_batch_worker):
+    """Test that uniqueness constraints are enforced for invoice_number and other_doc_number."""
+    worker = integration_batch_worker
+    
+    # Create a test invoice with a specific number
+    test_invoice_number = "INV-TEST-UNIQUE-001"
+    test_invoice1 = Invoice(
+        invoice_uuid="test-invoice-uuid-1",
+        payment_advice_uuid="test-payment-advice-uuid",
+        customer_uuid="test-customer-uuid",
+        invoice_number=test_invoice_number,
+        invoice_date=datetime.utcnow(),
+        booking_amount=1000.0,
+        invoice_status=InvoiceStatus.OPEN,
+        sap_transaction_id=None
+    )
+    
+    # Create a test other document with a specific number
+    test_doc_number = "DOC-TEST-UNIQUE-001"
+    test_other_doc1 = OtherDoc(
+        other_doc_uuid="test-other-doc-uuid-1",
+        payment_advice_uuid="test-payment-advice-uuid",
+        customer_uuid="test-customer-uuid",
+        other_doc_number=test_doc_number,
+        other_doc_date=datetime.utcnow(),
+        other_doc_type=OtherDocType.OTHER,
+        other_doc_amount=500.0,
+        sap_transaction_id=None
+    )
+    
+    # Add the first invoice and other doc
+    await worker.dao.add_document("invoice", test_invoice1.invoice_uuid, test_invoice1)
+    await worker.dao.add_document("other_doc", test_other_doc1.other_doc_uuid, test_other_doc1)
+    
+    # Verify they were added
+    assert "invoice" in worker.dao._documents
+    assert test_invoice1.invoice_uuid in worker.dao._documents["invoice"]
+    assert "other_doc" in worker.dao._documents
+    assert test_other_doc1.other_doc_uuid in worker.dao._documents["other_doc"]
+    
+    # Now try to create duplicates with the same numbers
+    duplicate_invoice_exists = await worker.check_document_exists("invoice", "invoice_number", test_invoice_number)
+    duplicate_doc_exists = await worker.check_document_exists("other_doc", "other_doc_number", test_doc_number)
+    
+    # Assert that duplicates are detected
+    assert duplicate_invoice_exists is True, "Uniqueness check for invoice_number failed"
+    assert duplicate_doc_exists is True, "Uniqueness check for other_doc_number failed"
+    
+    # Try to add duplicates through the process_payment_advice method
+    # Create mock data for payment advice processing
+    email_log_uuid = "test-email-log-uuid"
+    pa_data = {
+        "legal_entity_uuid": "test-legal-entity-uuid",
+        "payment_advice_number": "PA-TEST-001",
+        "payment_advice_date": datetime.utcnow(),
+        "payment_advice_amount": 1500.0,
+        "payer_name": "Test Payer",
+        "payee_name": "Test Payee"
+    }
+    
+    # Mock email data and transaction details
+    email_data = {"email_id": "test-email-id"}
+    
+    # Patch the extract_transaction_details method to return our test data with duplicate invoice number
+    original_extract = worker.llm_extractor.extract_transaction_details
+    
+    # Prepare mock data for duplicate test
+    mock_invoice_data = [{
+        "customer_uuid": "test-customer-uuid",
+        "invoice_number": test_invoice_number,  # Duplicate invoice number
+        "invoice_date": datetime.utcnow(),
+        "booking_amount": 1000.0
+    }]
+    
+    mock_other_doc_data = [{
+        "customer_uuid": "test-customer-uuid",
+        "other_doc_number": test_doc_number,  # Duplicate document number
+        "other_doc_date": datetime.utcnow(),
+        "other_doc_type": OtherDocType.OTHER,
+        "other_doc_amount": 500.0
+    }]
+    
+    mock_settlements_data = []
+    
+    # Define a regular (non-async) mock function
+    def mock_extract(*args, **kwargs):
+        return mock_invoice_data, mock_other_doc_data, mock_settlements_data
+    
+    # Set mock extractor
+    worker.llm_extractor.extract_transaction_details = mock_extract
+    
+    try:
+        # Process the payment advice with duplicate invoice and document numbers
+        await worker.process_payment_advice(email_log_uuid, pa_data, email_data, 0)
+        
+        # Count invoices and other docs after processing
+        invoice_count = len(worker.dao._documents["invoice"])
+        other_doc_count = len(worker.dao._documents["other_doc"])
+        
+        # The counts should still be 1 for each since duplicates should be skipped
+        assert invoice_count == 1, f"Expected 1 invoice, got {invoice_count}. Duplicate was not skipped."
+        assert other_doc_count == 1, f"Expected 1 other doc, got {other_doc_count}. Duplicate was not skipped."
+    finally:
+        # Restore original extractor
+        worker.llm_extractor.extract_transaction_details = original_extract
 
 
 @pytest.mark.asyncio
