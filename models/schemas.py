@@ -169,6 +169,7 @@ class Invoice(BaseModel):
     invoice_number: str = ""  # Should be unique within the system
     invoice_date: Optional[date] = None
     booking_amount: Optional[float] = None
+    total_settlement_amount: Optional[float] = None  # Total amount settled against this invoice
     sap_transaction_id: Optional[str] = None  # SAP transaction ID after reconciliation
     invoice_status: InvoiceStatus = InvoiceStatus.OPEN
 
@@ -194,7 +195,6 @@ class Settlement(BaseModel):
     other_doc_uuid: Optional[str] = None  # FK to OtherDoc - exactly one of invoice_uuid or other_doc_uuid must be set
     settlement_date: Optional[date] = None
     settlement_amount: Optional[float] = None
-    sap_transaction_id: Optional[str] = None  # SAP transaction ID after reconciliation
     settlement_status: SettlementStatus = SettlementStatus.READY
 
     def __post_init__(self):

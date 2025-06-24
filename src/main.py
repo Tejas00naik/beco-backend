@@ -280,6 +280,7 @@ class BatchWorker:
                     invoice_number=invoice_number,
                     invoice_date=inv_data.get("invoice_date"),
                     booking_amount=inv_data.get("booking_amount"),
+                    total_settlement_amount=None,  # Will be updated as settlements are added
                     invoice_status=InvoiceStatus.OPEN,
                     sap_transaction_id=None  # Will be set after successful SAP reconciliation
                 )
@@ -333,8 +334,7 @@ class BatchWorker:
                         other_doc_uuid=None,
                         settlement_date=settlements_data[i].get("settlement_date"),
                         settlement_amount=settlements_data[i].get("settlement_amount"),
-                        settlement_status=SettlementStatus.READY,
-                        sap_transaction_id=None  # Will be set after successful SAP reconciliation
+                        settlement_status=SettlementStatus.READY
                     )
                     
                     # Save settlement to Firestore
@@ -357,8 +357,7 @@ class BatchWorker:
                         other_doc_uuid=other_doc_uuid,
                         settlement_date=settlements_data[i + len(invoice_uuids)].get("settlement_date"),
                         settlement_amount=settlements_data[i + len(invoice_uuids)].get("settlement_amount"),
-                        settlement_status=SettlementStatus.READY,
-                        sap_transaction_id=None  # Will be set after successful SAP reconciliation
+                        settlement_status=SettlementStatus.READY
                     )
                     
                     # Save settlement to Firestore
