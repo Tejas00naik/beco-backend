@@ -193,74 +193,109 @@ class BatchWorker:
             True if processing was successful, False otherwise
         """
         try:
-            # Generate a UUID for this email
-            email_uuid = email_data.get("email_id", str(uuid.uuid4()))
+            # Get or generate email UUID 
+            email_log_uuid = email_data.get("email_id", str(uuid.uuid4()))
+            # The original gmail_id is not needed in our simplified schema
             
-            # Upload the raw email content to GCS
-            if self.gcs_uploader and "raw_email" in email_data:
-                try:
-                    # Upload raw email data to GCS bucket using constants from config
-                    gcs_path = self.gcs_uploader.upload_email_object(
-                        email_uuid=email_uuid,
-                        email_data=email_data["raw_email"]
-                    )
-                    logger.info(f"Uploaded email {email_uuid} to GCS at path: {gcs_path}")
-                except Exception as gcs_error:
-                    logger.error(f"Failed to upload email to GCS: {str(gcs_error)}")
-                    gcs_path = ""
-            else:
-                # For mock or test environments where GCS isn't available
-                gcs_path = email_data.get("object_file_path", "") 
+            # Extract components from the email
+            raw_email_data = email_data["raw_email"]
+            text_content = email_data.get("text_content")
+            html_content = email_data.get("html_content")
+            attachments = email_data.get("attachments", [])
             
-            # Format received_at to datetime if it's a string
-            received_at = email_data["received_at"]
-            if isinstance(received_at, str):
-                received_at = datetime.fromisoformat(received_at)
+            gcs_folder_uri = None
+            try:
+                # Upload all email components to GCS in a single folder
+                upload_result = self.gcs_uploader.upload_email_complete(
+                    email_log_uuid,
+                    raw_email_data,
+                    text_content,
+                    html_content,
+                    attachments
+                )
                 
-            # Create email log entry - without LLM processing at this stage
+                # We only need to store the base folder URI
+                # The folder contains all email components with standard naming
+                folder_path = f"emails/{email_log_uuid}"
+                gcs_folder_uri = f"gs://{self.gcs_uploader.bucket_name}/{folder_path}"
+                
+                logger.info(f"Uploaded email {email_log_uuid} to GCS with {len(attachments)} attachments")
+            except Exception as e:
+                logger.error(f"Failed to upload email to GCS: {str(e)}")
+                # Continue processing even if GCS upload fails
+                gcs_folder_uri = None
+            
+            # Prepare data for EmailLog
+            received_at = email_data.get("received_at") or datetime.now()
+            
+            # Create EmailLog in Firestore
             email_log = EmailLog(
-                email_log_uuid=email_uuid,
-                group_uuids=[],  # Empty list - will be filled by LLM later
-                email_object_file_path=gcs_path,
-                received_at=received_at,
-                sender_mail=email_data["sender_mail"].lower(),
+                email_log_uuid=email_log_uuid,  # Fixed to use email_log_uuid
+                email_subject=email_data.get("subject", ""),
+                sender_mail=email_data.get("sender_mail", ""),
                 original_sender_mail=email_data.get("original_sender_mail"),
-                email_subject=email_data.get("subject"),
-                mailbox_id=self.mailbox_id
+                mailbox_id=self.mailbox_id,
+                received_at=received_at,
+                gcs_folder_uri=gcs_folder_uri,
+                group_uuids=[],  # Will be populated later during payment advice processing
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
             )
             
-            # Save email log to Firestore
-            await self.dao.add_document("email_log", email_log.email_log_uuid, email_log)
+            # Add EmailLog to Firestore
+            # Use __dict__ to get dict representation of the dataclass
+            await self.dao.add_document("email_log", email_log.email_log_uuid, email_log.__dict__)
             
-            # Create processing log entry for initial storage
-            processing_log = EmailProcessingLog(
+            # Track email processing with EmailProcessingLog
+            processing_id = f"{email_log.email_log_uuid}_{self.batch_run.run_id}"
+            email_processing_log = EmailProcessingLog(
                 email_log_uuid=email_log.email_log_uuid,
                 run_id=self.batch_run.run_id,
-                processing_status=ProcessingStatus.PARSED
+                processing_status=ProcessingStatus.PARSED,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
             )
             
-            doc_id = f"{email_log.email_log_uuid}_{self.batch_run.run_id}"
-            await self.dao.add_document("email_processing_log", doc_id, processing_log)
+            await self.dao.add_document(
+                "email_processing_log", 
+                processing_id,
+                email_processing_log.__dict__
+            )
             
+            # For first phase, we just need to store the email metadata
+            # and mark the processing as complete
+            await self.dao.update_document(
+                "email_processing_log",
+                processing_id,
+                {
+                    "processing_status": ProcessingStatus.PARSED, 
+                    "updated_at": datetime.utcnow()
+                }
+            )
+            
+            # Update success count
             self.emails_processed += 1
+            
             logger.info(f"Successfully processed email {email_log.email_log_uuid}")
             return True
             
         except Exception as e:
-            logger.error(f"Error processing email {email_data.get('email_id')}: {str(e)}")
+            logger.error(f"Error processing email: {str(e)}")
+            self.errors += 1
             
             # Create error log
             try:
-                email_id = email_data.get("email_id", "unknown_email")
+                # Use the same email_log_uuid we generated earlier, or get it from data
+                error_email_uuid = email_data.get("email_id", str(uuid.uuid4()))
                 processing_log = EmailProcessingLog(
-                    email_log_uuid=email_id,
+                    email_log_uuid=error_email_uuid,
                     run_id=self.batch_run.run_id,
                     processing_status=ProcessingStatus.ERROR,
                     error_msg=str(e)
                 )
                 
-                doc_id = f"{email_id}_{self.batch_run.run_id}"
-                await self.dao.add_document("email_processing_log", doc_id, processing_log)
+                doc_id = f"{error_email_uuid}_{self.batch_run.run_id}"
+                await self.dao.add_document("email_processing_log", doc_id, processing_log.__dict__)
             except Exception as log_error:
                 logger.error(f"Failed to create error log: {str(log_error)}")
             

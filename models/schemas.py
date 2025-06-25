@@ -140,7 +140,7 @@ class CustEmailDomainMap(BaseModel):
 class EmailLog(BaseModel):
     email_log_uuid: str = field(default_factory=lambda: str(uuid4()))
     group_uuids: List[str] = field(default_factory=list)  # Multiple FK links to Group - derived from LLM-identified legal entities
-    email_object_file_path: str = ""
+    gcs_folder_uri: Optional[str] = None  # Base URI for the GCS folder containing all email components 
     received_at: datetime = field(default_factory=datetime.utcnow)
     sender_mail: str = ""
     original_sender_mail: Optional[str] = None

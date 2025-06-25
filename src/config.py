@@ -17,5 +17,10 @@ PROD_COLLECTION_PREFIX = ""
 DEFAULT_GMAIL_CREDENTIALS_PATH = "secrets/email-client-secret.json"
 
 # GCS configuration
-EMAIL_OBJECT_FILENAME = "email.raw"  # Name of the file to store raw email content in GCS
 DEFAULT_GCS_BUCKET_NAME = "beco-mails"  # Default bucket name if not specified
+
+# Email file naming in GCS
+EMAIL_OBJECT_FILENAME = "email.raw"  # Name of the file to store raw email content in GCS
+EMAIL_TEXT_FILENAME = "email.txt"  # Plain text version of email
+EMAIL_HTML_FILENAME = "email.html"  # HTML version of email
+ATTACHMENT_PREFIX = "attachment_"  # Prefix for attachment filenames
