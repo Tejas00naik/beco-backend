@@ -11,10 +11,17 @@ import json
 import logging
 import asyncio
 import uuid
-import argparse
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Union, Literal
+from typing import Dict, List, Any, Optional, Union, Literal, Set
+from pathlib import Path
+import argparse
 from dotenv import load_dotenv
+from os.path import abspath, dirname
+
+# Add project root to Python path
+project_root = dirname(dirname(abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,26 +33,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ensure models and src are in the path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Import application components
+# Import data models
 from models.schemas import (
     EmailLog, PaymentAdvice, Invoice, OtherDoc, Settlement,
     BatchRun, EmailProcessingLog, ProcessingStatus, BatchRunStatus,
     PaymentAdviceStatus, InvoiceStatus, SettlementStatus, OtherDocType
 )
 from models.firestore_dao import FirestoreDAO
+
+# Import adapters
+from src.adapters.gcs_uploader import GCSUploader
+from src.adapters.gmail_reader import GmailReader
+from src.config import DEFAULT_GCS_BUCKET_NAME
+
+# Import configuration
+from src.config import (
+    TARGET_MAILBOX_ID,
+    ALLOWED_MAILBOX_IDS,
+    DEFAULT_FETCH_DAYS,
+    DEFAULT_GMAIL_CREDENTIALS_PATH,
+    EMAIL_OBJECT_FILENAME
+)
+
+# Import application components
 from src.mocks.email_reader import MockEmailReader
 from src.mocks.llm_extractor import MockLLMExtractor
 from src.mocks.sap_caller import MockSapCaller
 
-# Import Gmail adapter if available
-try:
-    from src.adapters.gmail_reader import GmailReader
-    GMAIL_AVAILABLE = True
-except ImportError:
-    GMAIL_AVAILABLE = False
+# Check if Gmail is available (already imported at the top)
+GMAIL_AVAILABLE = True
 
 
 class BatchWorker:
@@ -95,6 +111,7 @@ class BatchWorker:
             run_mode: Either 'incremental' or 'full_refresh'
             use_gmail: Whether to use the Gmail adapter instead of mock reader
             gmail_credentials_path: Path to Gmail API credentials file
+            gcs_bucket_name: Name of the GCS bucket for storing email objects (optional)
         """
         # Load environment variables
         self.project_id = os.environ.get("FIRESTORE_PROJECT_ID")
@@ -119,12 +136,21 @@ class BatchWorker:
             self.email_reader = GmailReader(credentials_path=gmail_credentials_path, mailbox_id=mailbox_id)
             logger.info(f"Using Gmail reader with mailbox_id={mailbox_id}")
         else:
-            self.email_reader = MockEmailReader()
-            logger.info("Using mock email reader")
+            self.email_reader = MockEmailReader(mailbox_id=mailbox_id)
+            logger.info(f"Using mock email reader with mailbox_id={mailbox_id}")
             
-        # Initialize other components
+        # Initialize LLM extractor and SAP caller (always use mocks for now)
         self.llm_extractor = MockLLMExtractor()
         self.sap_caller = MockSapCaller()
+        
+        # Initialize GCS uploader using bucket name from environment variable or default
+        self.gcs_uploader = None
+        gcs_bucket_name = os.environ.get("GCS_BUCKET_NAME", DEFAULT_GCS_BUCKET_NAME)
+        try:
+            self.gcs_uploader = GCSUploader(gcs_bucket_name)
+            logger.info(f"Initialized GCS uploader for bucket: {gcs_bucket_name}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize GCS uploader: {str(e)}. Email raw data will not be stored.")
         
         # Initialize batch run stats
         self.batch_run = None
@@ -167,40 +193,52 @@ class BatchWorker:
             True if processing was successful, False otherwise
         """
         try:
-            # Extract metadata using LLM first
-            metadata = self.llm_extractor.extract_email_metadata(email_data)
+            # Generate a UUID for this email
+            email_uuid = email_data.get("email_id", str(uuid.uuid4()))
             
-            # Create email log entry
+            # Upload the raw email content to GCS
+            if self.gcs_uploader and "raw_email" in email_data:
+                try:
+                    # Upload raw email data to GCS bucket using constants from config
+                    gcs_path = self.gcs_uploader.upload_email_object(
+                        email_uuid=email_uuid,
+                        email_data=email_data["raw_email"]
+                    )
+                    logger.info(f"Uploaded email {email_uuid} to GCS at path: {gcs_path}")
+                except Exception as gcs_error:
+                    logger.error(f"Failed to upload email to GCS: {str(gcs_error)}")
+                    gcs_path = ""
+            else:
+                # For mock or test environments where GCS isn't available
+                gcs_path = email_data.get("object_file_path", "") 
+            
+            # Format received_at to datetime if it's a string
+            received_at = email_data["received_at"]
+            if isinstance(received_at, str):
+                received_at = datetime.fromisoformat(received_at)
+                
+            # Create email log entry - without LLM processing at this stage
             email_log = EmailLog(
-                email_log_uuid=email_data["email_id"],
-                group_uuids=metadata.get("group_uuids", []),  # List of Group UUIDs from LLM metadata
-                email_object_file_path=email_data["object_file_path"],
-                received_at=datetime.fromisoformat(email_data["received_at"]),
+                email_log_uuid=email_uuid,
+                group_uuids=[],  # Empty list - will be filled by LLM later
+                email_object_file_path=gcs_path,
+                received_at=received_at,
                 sender_mail=email_data["sender_mail"].lower(),
                 original_sender_mail=email_data.get("original_sender_mail"),
-                email_subject=metadata.get("email_subject"),
+                email_subject=email_data.get("subject"),
                 mailbox_id=self.mailbox_id
             )
             
             # Save email log to Firestore
             await self.dao.add_document("email_log", email_log.email_log_uuid, email_log)
             
-            # Create processing log entry
+            # Create processing log entry for initial storage
             processing_log = EmailProcessingLog(
                 email_log_uuid=email_log.email_log_uuid,
                 run_id=self.batch_run.run_id,
                 processing_status=ProcessingStatus.PARSED
             )
             
-            # Extract payment advices
-            payment_advices = self.llm_extractor.extract_payment_advices(email_data)
-            
-            # Process each payment advice
-            for i, pa_data in enumerate(payment_advices):
-                await self.process_payment_advice(email_log.email_log_uuid, pa_data, email_data, i)
-            
-            # Update processing log as successful
-            processing_log.processing_status = ProcessingStatus.SAP_PUSHED
             doc_id = f"{email_log.email_log_uuid}_{self.batch_run.run_id}"
             await self.dao.add_document("email_processing_log", doc_id, processing_log)
             
@@ -213,17 +251,20 @@ class BatchWorker:
             
             # Create error log
             try:
+                email_id = email_data.get("email_id", "unknown_email")
                 processing_log = EmailProcessingLog(
-                    email_log_uuid=email_data["email_id"],
+                    email_log_uuid=email_id,
                     run_id=self.batch_run.run_id,
                     processing_status=ProcessingStatus.ERROR,
                     error_msg=str(e)
                 )
                 
-                doc_id = f"{email_data['email_id']}_{self.batch_run.run_id}"
+                doc_id = f"{email_id}_{self.batch_run.run_id}"
                 await self.dao.add_document("email_processing_log", doc_id, processing_log)
             except Exception as log_error:
                 logger.error(f"Failed to create error log: {str(log_error)}")
+            
+            return False
 
     async def process_payment_advice(self, email_log_uuid: str, pa_data: Dict[str, Any], 
                                email_data: Dict[str, Any], pa_index: int) -> None:
@@ -480,28 +521,47 @@ class BatchWorker:
             run_id = await self.start_batch_run()
             logger.info(f"Starting batch worker run {run_id}")
             
-            # Get the last processed timestamp for incremental mode
+            # Get the timestamp for email fetching
             since_timestamp = None
+            
             if self.run_mode == "incremental":
                 # Query for the most recent email log for this mailbox
                 latest_emails = await self.dao.query_documents(
                     "email_log",
                     filters=[("mailbox_id", "==", self.mailbox_id)],
                     order_by="received_at",
+                    desc=True,  # Get most recent first
                     limit=1
                 )
                 
                 if latest_emails:
-                    # Parse the timestamp string to datetime
+                    # Parse the timestamp from the most recent email
                     latest_ts = latest_emails[0].get("received_at")
                     if isinstance(latest_ts, str):
                         since_timestamp = datetime.fromisoformat(latest_ts)
                     else:
                         since_timestamp = latest_ts
                     logger.info(f"Incremental mode: Processing emails since {since_timestamp}")
+                else:
+                    # No existing emails - try to get initial fetch date from environment
+                    initial_date_str = os.environ.get("INITIAL_FETCH_START_DATE")
+                    if initial_date_str:
+                        try:
+                            # Parse date in ISO format (YYYY-MM-DD)
+                            since_timestamp = datetime.fromisoformat(initial_date_str)
+                            logger.info(f"First run: Using INITIAL_FETCH_START_DATE={initial_date_str}")
+                        except ValueError:
+                            logger.warning(f"Invalid INITIAL_FETCH_START_DATE format: {initial_date_str}. Using default.")
+                            # Default to 7 days ago if parsing fails
+                            since_timestamp = datetime.now() - timedelta(days=7)
+                    else:
+                        # Default to configured days ago if no environment variable
+                        since_timestamp = datetime.now() - timedelta(days=DEFAULT_FETCH_DAYS)
+                        logger.info(f"First run: No INITIAL_FETCH_START_DATE set, using last {DEFAULT_FETCH_DAYS} days")
             
-            # Get unprocessed emails with timestamp (now supported by both gmail and mock)
+            # Get unprocessed emails with timestamp
             try:
+                logger.info(f"Fetching emails {self.mailbox_id} with since_timestamp={since_timestamp}")
                 new_emails = self.email_reader.get_unprocessed_emails(since_timestamp)
             except Exception as e:
                 logger.error(f"Error getting unprocessed emails: {str(e)}")
@@ -549,11 +609,11 @@ async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Payment Advice Batch Worker")
     parser.add_argument("--test", action="store_true", help="Run in test mode with dev_ collection prefix")
-    parser.add_argument("--mailbox_id", default="default", help="Mailbox identifier")
     parser.add_argument("--mode", choices=["incremental", "full_refresh"], default="incremental", 
                         help="Run mode: incremental or full_refresh")
     parser.add_argument("--gmail", action="store_true", help="Use Gmail adapter instead of mock email reader")
-    parser.add_argument("--credentials", help="Path to Gmail API credentials file")
+    parser.add_argument("--credentials", default=DEFAULT_GMAIL_CREDENTIALS_PATH, 
+                        help=f"Path to Gmail API credentials file (default: {DEFAULT_GMAIL_CREDENTIALS_PATH})")
     
     args = parser.parse_args()
     
@@ -563,11 +623,13 @@ async def main():
     # Initialize and run the batch worker
     worker = BatchWorker(
         is_test=is_test,
-        mailbox_id=args.mailbox_id,
+        mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
         run_mode=args.mode,
         use_gmail=args.gmail,
         gmail_credentials_path=args.credentials
     )
+    
+    logger.info(f"Using hardcoded mailbox ID: {TARGET_MAILBOX_ID}")
     await worker.run()
 
 

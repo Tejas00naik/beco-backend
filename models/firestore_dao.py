@@ -162,7 +162,7 @@ class FirestoreDAO:
             raise
 
     async def query_documents(self, collection: str, filters: List[tuple] = None, 
-                              order_by: str = None, limit: int = None) -> List[Dict[str, Any]]:
+                              order_by: str = None, limit: int = None, desc: bool = False) -> List[Dict[str, Any]]:
         """
         Query documents with filters.
         
@@ -183,7 +183,11 @@ class FirestoreDAO:
                     query = query.where(field, op, value)
             
             if order_by:
-                query = query.order_by(order_by)
+                # Apply descending order if specified
+                if desc:
+                    query = query.order_by(order_by, direction=firestore.Query.DESCENDING)
+                else:
+                    query = query.order_by(order_by)
                 
             if limit:
                 query = query.limit(limit)

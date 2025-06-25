@@ -103,17 +103,26 @@ class GmailReader:
         
         # Add date filter for incremental mode
         if since_timestamp:
-            # Format date as YYYY/MM/DD for Gmail query
+            # Format as RFC 3339 timestamp format for more precise filtering
+            # Gmail API uses after: with format YYYY/MM/DD for date filtering
+            # For more precision we can use rfc3339 format
             date_str = since_timestamp.strftime("%Y/%m/%d")
+            time_str = since_timestamp.strftime("%H:%M:%S")
+            
+            # Format date as YYYY/MM/DD for Gmail query
             query_parts.append(f"after:{date_str}")
+            
+            # You can also add time filtering if Gmail API supports it:
+            # query_parts.append(f"newer_than:{int((datetime.now() - since_timestamp).total_seconds())}s")
         
-        # You can add more filters here, e.g.:
-        # - Specific label: query_parts.append("label:PaymentAdvice")
-        # - Specific subject: query_parts.append("subject:\"Payment Advice\"")
-        
+        # Add mailbox specific filters if needed
+        if hasattr(self, 'query_filters') and self.query_filters:
+            query_parts.extend(self.query_filters)
+            
+        # Return the combined query, or empty string if no parts
         return " ".join(query_parts)
 
-    def _get_email_content(self, email_id: str) -> Dict[str, Any]:
+    def _get_email_content(self, email_id: str):
         """
         Get full content of an email using its ID.
         
@@ -121,57 +130,105 @@ class GmailReader:
             email_id: Gmail message ID
             
         Returns:
-            Dict containing email data
+            Dict containing email data including raw content for GCS storage
         """
-        # Get the email message
+        # Get the email message in RAW format to preserve the complete email
         message = self.service.users().messages().get(
+            userId='me', id=email_id, format='raw'
+        ).execute()
+        
+        # Get the raw email data as bytes - this will be stored in GCS
+        raw_email_data = base64.urlsafe_b64decode(message['raw'])
+        
+        # Also get the full message to parse headers
+        full_message = self.service.users().messages().get(
             userId='me', id=email_id, format='full'
         ).execute()
         
         # Extract headers
-        headers = message['payload']['headers']
+        headers = full_message['payload']['headers']
         subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '')
         sender = next((h['value'] for h in headers if h['name'].lower() == 'from'), '')
+        original_sender = None
         received = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
         
+        # Check if this is a forwarded email and extract original sender if it is
+        is_forwarded = 'Fwd:' in subject or 'FW:' in subject or 'Forward:' in subject
+        
+        if is_forwarded:
+            # For forwarded emails, try to extract the original sender from the message body
+            try:
+                # Get the email body
+                if 'parts' in full_message['payload']:
+                    # Multipart email
+                    for part in full_message['payload']['parts']:
+                        if part['mimeType'] == 'text/plain':
+                            data = part['body'].get('data', '')
+                            if data:
+                                email_content = base64.urlsafe_b64decode(data).decode('utf-8')
+                                # Look for common forwarded email patterns to find original sender
+                                patterns = [
+                                    r'From:\s*([^\n]+)',
+                                    r'From:\s*([^<]+)<([^>]+)>',
+                                    r'From:\s*"?([^"]+)"?\s*<([^>]+)>'
+                                ]
+                                
+                                for pattern in patterns:
+                                    import re
+                                    match = re.search(pattern, email_content)
+                                    if match:
+                                        # If we find an email address in angle brackets, use that
+                                        if len(match.groups()) > 1 and '@' in match.group(2):
+                                            original_sender = match.group(2).strip()
+                                        else:
+                                            # Otherwise use the whole match
+                                            original_sender = match.group(1).strip()
+                                        break
+                                        
+                else:
+                    # Non-multipart email
+                    data = full_message['payload']['body'].get('data', '')
+                    if data:
+                        email_content = base64.urlsafe_b64decode(data).decode('utf-8')
+                        # Extract original sender using the same patterns as above
+                        patterns = [
+                            r'From:\s*([^\n]+)',
+                            r'From:\s*([^<]+)<([^>]+)>',
+                            r'From:\s*"?([^"]+)"?\s*<([^>]+)>'
+                        ]
+                        
+                        for pattern in patterns:
+                            import re
+                            match = re.search(pattern, email_content)
+                            if match:
+                                if len(match.groups()) > 1 and '@' in match.group(2):
+                                    original_sender = match.group(2).strip()
+                                else:
+                                    original_sender = match.group(1).strip()
+                                break
+            except Exception as e:
+                logger.warning(f"Error parsing forwarded email for original sender: {str(e)}")
+                # Fall back to sender if we can't extract the original sender
+                original_sender = None
+            
         # Parse received date
         try:
             received_datetime = parsedate_to_datetime(received)
         except:
             received_datetime = datetime.now()
         
-        # Get the email body content
-        content = ""
-        if 'parts' in message['payload']:
-            for part in message['payload']['parts']:
-                if part['mimeType'] == 'text/plain':
-                    body_data = part['body'].get('data', '')
-                    if body_data:
-                        content = base64.urlsafe_b64decode(body_data).decode('utf-8')
-        elif 'body' in message['payload'] and 'data' in message['payload']['body']:
-            body_data = message['payload']['body']['data']
-            content = base64.urlsafe_b64decode(body_data).decode('utf-8')
-        
-        # Save the raw email data
-        email_file_path = os.path.join(self.data_path, f"{email_id}.eml")
-        
-        # Create the email object
+        # Create the email object - simplified for GCS workflow
         email_obj = {
             "email_id": email_id,
-            "object_file_path": email_file_path,
+            "raw_email": raw_email_data,  # Raw email data as bytes for storage in GCS
             "sender_mail": sender,
-            "original_sender_mail": None,  # Will be populated if forwarded
-            "received_at": received_datetime.isoformat(),
+            "original_sender_mail": original_sender,
+            "received_at": received_datetime,
             "subject": subject,
-            "content": content,
-            "customer_uuid": None,  # Will be populated by downstream processing
-            "legal_entity_uuid": None,  # Will be populated by downstream processing
             "mailbox_id": self.mailbox_id
         }
         
-        # Save the processed email data
-        with open(f"{email_file_path}.json", 'w') as f:
-            json.dump(email_obj, f, indent=2)
+        logger.info(f"Retrieved email {email_id} from Gmail with {len(raw_email_data)} bytes of raw data")
         
         return email_obj
 
