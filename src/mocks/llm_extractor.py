@@ -8,7 +8,7 @@ credit notes, and settlement details.
 
 import logging
 from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -171,3 +171,80 @@ class MockLLMExtractor:
                    f"and {len(settlements)} settlements for payment advice {payment_advice_id}")
         
         return invoices, other_docs, settlements
+    
+    def process_attachment_for_payment_advice(self, email_text_content: str, attachment_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process a single attachment as a payment advice.
+        
+        In a real implementation, this would pass the email text content and attachment data to a LLM
+        service, which would extract the payment advice details. In this mock implementation, we generate
+        standardized output based on the attachment filename and some mock data.
+        
+        Args:
+            email_text_content: Text content of the email
+            attachment_data: Dictionary containing attachment filename and other metadata
+            
+        Returns:
+            Dictionary with standardized LLM output format containing metaTable, invoiceTable, 
+            otherDocTable, and settlementTable
+        """
+        # Log the processing
+        filename = attachment_data.get('filename', 'unknown_file')
+        logger.info(f"Processing attachment '{filename}' as payment advice")
+        
+        # Generate mock metadata based on attachment filename
+        # In a real implementation, this would come from the LLM's analysis of the attachment
+        current_date = datetime.utcnow()
+        date_str = current_date.strftime("%d-%b-%Y").upper()
+        advice_number = f"PA-{hash(filename) % 1000000:06d}"
+        
+        # Create a mock LLM output in the standardized format
+        output = {
+            "metaTable": {
+                "paymentAdviceDate": date_str,
+                "paymentAdviceNumber": advice_number,
+                "payersLegalName": f"Payer Corp {hash(filename) % 10}",
+                "payeesLegalName": f"Payee LLC {hash(filename) % 5}"
+            },
+            "invoiceTable": [
+                {
+                    "invoiceNumber": f"INV-{hash(filename) % 10000:04d}",
+                    "invoiceDate": (current_date - timedelta(days=30)).strftime("%d-%b-%Y").upper(),
+                    "bookingAmount": float(f"{(hash(filename) % 100000) / 100:.2f}")
+                },
+                {
+                    "invoiceNumber": f"INV-{(hash(filename) + 1) % 10000:04d}",
+                    "invoiceDate": (current_date - timedelta(days=15)).strftime("%d-%b-%Y").upper(),
+                    "bookingAmount": float(f"{(hash(filename + 'second') % 50000) / 100:.2f}")
+                }
+            ],
+            "otherDocTable": [
+                {
+                    "otherDocType": "BDPO",
+                    "otherDocNumber": f"BDPO-{hash(filename) % 100000:05d}",
+                    "otherDocAmount": float(f"-{(hash(filename) % 100000) / 100:.2f}")
+                },
+                {
+                    "otherDocType": "TDS",
+                    "otherDocNumber": f"TDS-CM-{hash(filename) % 10000:04d}",
+                    "otherDocAmount": float(f"-{(hash(filename + 'tds') % 1000) / 100:.2f}")
+                }
+            ],
+            "settlementTable": [
+                {
+                    "settlementDocNumber": f"BDPO-{hash(filename) % 100000:05d}", # Same as otherDocNumber above
+                    "invoiceNumber": None,
+                    "settlementAmount": None
+                },
+                {
+                    "settlementDocNumber": f"TDS-CM-{hash(filename) % 10000:04d}", # Same as otherDocNumber above
+                    "invoiceNumber": f"INV-{hash(filename) % 10000:04d}", # Same as first invoiceNumber
+                    "settlementAmount": float(f"-{(hash(filename + 'settle') % 1000) / 100:.2f}")
+                }
+            ]
+        }
+        
+        logger.info(f"Generated payment advice data for attachment '{filename}' with {len(output['invoiceTable'])} invoices, "
+                   f"{len(output['otherDocTable'])} other docs, and {len(output['settlementTable'])} settlements")
+        
+        return output

@@ -273,6 +273,46 @@ class BatchWorker:
                 }
             )
             
+            # Process each attachment through LLM extractor
+            # Each attachment is treated as a separate payment advice
+            if self.llm_extractor and attachments:
+                logger.info(f"Processing {len(attachments)} attachments with LLM for email {email_log.email_log_uuid}")
+                
+                # Get the email text content
+                email_text_content = text_content or ""
+                
+                processed_attachments = 0
+                for attachment_idx, attachment in enumerate(attachments):
+                    try:
+                        attachment_filename = attachment.get('filename', f'attachment-{attachment_idx}')
+                        logger.info(f"Processing attachment {attachment_idx+1}/{len(attachments)}: {attachment_filename}")
+                        
+                        # Call LLM for this specific attachment
+                        llm_output = self.llm_extractor.process_attachment_for_payment_advice(
+                            email_text_content, attachment
+                        )
+                        
+                        # Print summary of extracted data
+                        logger.info(f"LLM extracted data for attachment {attachment_filename}:")
+                        logger.info(f"  Meta Table: Payment advice number {llm_output.get('metaTable', {}).get('paymentAdviceNumber')}")
+                        logger.info(f"  Invoice Table: {len(llm_output.get('invoiceTable', []))} items")
+                        logger.info(f"  Other Doc Table: {len(llm_output.get('otherDocTable', []))} items")
+                        logger.info(f"  Settlement Table: {len(llm_output.get('settlementTable', []))} items")
+                        
+                        # In a production implementation, we would now:  
+                        # 1. Create PaymentAdvice record from metaTable
+                        # 2. Create Invoice records from invoiceTable  
+                        # 3. Create OtherDoc records from otherDocTable
+                        # 4. Create Settlement records from settlementTable
+                        # 5. Update EmailLog with group_uuids extracted from the LLM output
+                        
+                        processed_attachments += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing attachment {attachment_idx} with LLM: {str(e)}")
+                
+                logger.info(f"Successfully processed {processed_attachments}/{len(attachments)} attachments with LLM")
+            
             # Update success count
             self.emails_processed += 1
             
