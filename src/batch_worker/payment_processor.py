@@ -6,7 +6,10 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 
 # Import models
-from models.schemas import PaymentAdvice, Invoice, PaymentAdviceStatus, InvoiceStatus
+from models.schemas import (
+    PaymentAdvice, Invoice, OtherDoc, Settlement,
+    PaymentAdviceStatus, InvoiceStatus, OtherDocType, SettlementStatus
+)
 
 # Import helpers
 from src.batch_worker.helpers import parse_date, parse_amount, check_document_exists
@@ -147,7 +150,152 @@ class PaymentProcessor:
                 await self.dao.add_document("invoice", invoice_uuid, invoice.__dict__)
                 logger.info(f"Created invoice {invoice_uuid} with number {invoice_number}")
             
-            # TODO: Process other_docs and settlements from LLM output
+            # Process other docs from LLM output
+            other_doc_table = llm_output.get('otherDocTable', [])
+            other_doc_uuids = {}  # To map otherDocNumber -> other_doc_uuid for settlements
+            
+            for other_doc_data in other_doc_table:
+                # Extract other doc fields from LLM output
+                other_doc_number = other_doc_data.get('otherDocNumber')
+                
+                # Skip if other doc number is missing
+                if not other_doc_number:
+                    logger.warning("Skipping other doc with missing other_doc_number")
+                    continue
+                    
+                # Check if other doc number already exists (uniqueness constraint)
+                other_doc_exists = await check_document_exists(self.dao, "other_doc", "other_doc_number", other_doc_number)
+                if other_doc_exists:
+                    logger.warning(f"Other doc with number {other_doc_number} already exists - skipping")
+                    continue
+                
+                # Parse other doc date and amount
+                other_doc_date = parse_date(other_doc_data.get('otherDocDate'))
+                other_doc_amount = parse_amount(other_doc_data.get('otherDocAmount'))
+                
+                # Determine other doc type
+                other_doc_type_str = other_doc_data.get('otherDocType', 'OTHER')
+                try:
+                    other_doc_type = OtherDocType(other_doc_type_str)
+                except ValueError:
+                    logger.warning(f"Invalid other doc type '{other_doc_type_str}', using OTHER")
+                    other_doc_type = OtherDocType.OTHER
+                
+                # Create OtherDoc object
+                other_doc_uuid = str(uuid.uuid4())
+                other_doc = OtherDoc(
+                    other_doc_uuid=other_doc_uuid,
+                    payment_advice_uuid=payment_advice_uuid,
+                    customer_uuid=None,  # Will be set in future SAP integration
+                    other_doc_number=other_doc_number,
+                    other_doc_date=other_doc_date,
+                    other_doc_type=other_doc_type,
+                    other_doc_amount=other_doc_amount,
+                    sap_transaction_id=None  # Will be set after successful SAP reconciliation
+                )
+                
+                # Add OtherDoc to Firestore
+                await self.dao.add_document("other_doc", other_doc_uuid, other_doc.__dict__)
+                logger.info(f"Created other doc {other_doc_uuid} with number {other_doc_number}")
+                
+                # Store mapping for settlement linking
+                other_doc_uuids[other_doc_number] = other_doc_uuid
+            
+            # Process settlements from LLM output
+            settlement_table = llm_output.get('settlementTable', [])
+            invoice_uuids = {}  # Need to look up invoice UUIDs by invoice number
+            settlements_created = 0
+            settlement_errors = 0
+            
+            # First, query all invoices for this payment advice for faster lookup
+            invoice_query = await self.dao.query_documents("invoice", [("payment_advice_uuid", "==", payment_advice_uuid)])
+            
+            for inv in invoice_query:
+                invoice_uuids[inv.get("invoice_number")] = inv.get("invoice_uuid")
+            
+            logger.info(f"Found {len(invoice_uuids)} invoices and {len(other_doc_uuids)} other docs for payment advice {payment_advice_uuid}")
+            
+            for settlement_data in settlement_table:
+                # Extract settlement fields
+                settlement_doc_number = settlement_data.get('settlementDocNumber')
+                invoice_number = settlement_data.get('invoiceNumber')
+                settlement_amount = parse_amount(settlement_data.get('settlementAmount'))
+                
+                # Skip if settlement doc number is missing
+                if not settlement_doc_number:
+                    logger.warning("Skipping settlement with missing settlement_doc_number")
+                    settlement_errors += 1
+                    continue
+                
+                # Determine if this settlement is linked to an invoice or other doc
+                invoice_uuid = None
+                other_doc_uuid = None
+                
+                # Try to find matching invoice
+                if invoice_number:
+                    if invoice_number in invoice_uuids:
+                        invoice_uuid = invoice_uuids[invoice_number]
+                    else:
+                        logger.warning(f"Invoice number {invoice_number} not found in database for payment advice {payment_advice_uuid}")
+                
+                # Try to find matching other doc
+                if settlement_doc_number in other_doc_uuids:
+                    other_doc_uuid = other_doc_uuids[settlement_doc_number]
+                else:
+                    logger.warning(f"Other doc number {settlement_doc_number} not found in database for payment advice {payment_advice_uuid}")
+                
+                # Now we need BOTH invoice_uuid and other_doc_uuid to be set
+                if not invoice_uuid or not other_doc_uuid:
+                    logger.error(f"Skipping settlement with doc number {settlement_doc_number} and invoice number {invoice_number} - both must be linked")
+                    settlement_errors += 1
+                    continue
+                
+                # Log that we're linking to both invoice and other doc
+                logger.info(f"Settlement will link to both invoice {invoice_uuid} and other doc {other_doc_uuid}")
+                
+                # Create Settlement object
+                try:
+                    settlement_uuid = str(uuid.uuid4())
+                    settlement = Settlement(
+                        settlement_uuid=settlement_uuid,
+                        payment_advice_uuid=payment_advice_uuid,
+                        customer_uuid=None,  # Will be derived from invoice/other_doc in future
+                        invoice_uuid=invoice_uuid,
+                        other_doc_uuid=other_doc_uuid,
+                        settlement_date=payment_advice_date,  # Use payment advice date as settlement date
+                        settlement_amount=settlement_amount,
+                        settlement_status=SettlementStatus.READY
+                    )
+                    
+                    # Add Settlement to Firestore
+                    await self.dao.add_document("settlement", settlement_uuid, settlement.__dict__)
+                    logger.info(f"Created settlement {settlement_uuid} linked to invoice {invoice_number} and other doc {settlement_doc_number}")
+                    settlements_created += 1
+                    
+                except ValueError as e:
+                    logger.warning(f"Failed to create settlement: {str(e)}")
+                    settlement_errors += 1
+                    continue
+            
+            # Update payment advice status based on settlement processing result
+            if settlements_created > 0 and settlement_errors == 0 and len(settlement_table) == settlements_created:
+                # Only set to FETCHED if all settlements were processed successfully (no errors)
+                await self.dao.update_document("payment_advice", payment_advice_uuid, {
+                    "payment_advice_status": PaymentAdviceStatus.FETCHED
+                })
+                logger.info(f"Updated payment advice {payment_advice_uuid} status to FETCHED after processing all {settlements_created} settlements successfully")
+            elif settlements_created > 0 and settlement_errors > 0:
+                # If some settlements were created but others failed, mark as PARTIAL_FETCHED
+                await self.dao.update_document("payment_advice", payment_advice_uuid, {
+                    "payment_advice_status": PaymentAdviceStatus.PARTIAL_FETCHED
+                })
+                logger.warning(f"Updated payment advice {payment_advice_uuid} status to PARTIAL_FETCHED with {settlements_created} successful and {settlement_errors} failed settlements")
+            elif settlement_errors > 0:
+                # If all settlements failed (none created), mark as ERROR
+                await self.dao.update_document("payment_advice", payment_advice_uuid, {
+                    "payment_advice_status": PaymentAdviceStatus.ERROR
+                })
+                logger.warning(f"Updated payment advice {payment_advice_uuid} status to ERROR due to {settlement_errors} settlement errors with no successful settlements")
             
             return payment_advice_uuid
             

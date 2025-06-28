@@ -17,6 +17,10 @@ class PaymentAdviceStatus(str, enum.Enum):
     READY = "ready"
     RECONCILED = "reconciled"
     FLAGGED = "flagged"
+    PROCESSED = "processed"
+    FETCHED = "fetched"
+    PARTIAL_FETCHED = "partial_fetched"
+    ERROR = "error"
 
 
 class InvoiceStatus(str, enum.Enum):
@@ -198,12 +202,12 @@ class Settlement(BaseModel):
     settlement_status: SettlementStatus = SettlementStatus.READY
 
     def __post_init__(self):
-        # Enforce that exactly one of invoice_uuid or other_doc_uuid must be set
+        # Enforce that both invoice_uuid and other_doc_uuid must be set
         invoice_set = self.invoice_uuid is not None
         other_doc_set = self.other_doc_uuid is not None
         
-        if not (invoice_set ^ other_doc_set):  # XOR operation
-            raise ValueError("Exactly one of invoice_uuid or other_doc_uuid must be set")
+        if not (invoice_set and other_doc_set):  # Both must be set
+            raise ValueError("Both invoice_uuid and other_doc_uuid must be set")
 
 
 # Processing-Metadata Schema models

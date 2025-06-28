@@ -236,13 +236,13 @@ class MockLLMExtractor:
             "settlementTable": [
                 {
                     "settlementDocNumber": f"BDPO-{hash(filename) % 100000:05d}", # Same as otherDocNumber above
-                    "invoiceNumber": None,
-                    "settlementAmount": None
+                    "invoiceNumber": f"INV-{hash(filename) % 10000:04d}", # Both invoice and other doc numbers are provided
+                    "settlementAmount": float(f"-{(hash(filename + 'settle1') % 1000) / 100:.2f}")
                 },
                 {
                     "settlementDocNumber": f"TDS-CM-{hash(filename) % 10000:04d}", # Same as otherDocNumber above
-                    "invoiceNumber": f"INV-{hash(filename) % 10000:04d}", # Same as first invoiceNumber
-                    "settlementAmount": float(f"-{(hash(filename + 'settle') % 1000) / 100:.2f}")
+                    "invoiceNumber": f"INV-{(hash(filename) + 1) % 10000:04d}", # Both invoice and other doc numbers are provided
+                    "settlementAmount": float(f"-{(hash(filename + 'settle2') % 1000) / 100:.2f}")
                 }
             ]
         }
