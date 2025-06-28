@@ -16,7 +16,7 @@ class EmailProcessor:
     Handles email processing operations for the batch worker.
     """
     
-    def __init__(self, dao, gcs_uploader, llm_extractor):
+    def __init__(self, dao, gcs_uploader, llm_extractor, sap_integrator=None):
         """
         Initialize the email processor.
         
@@ -24,10 +24,12 @@ class EmailProcessor:
             dao: Firestore DAO instance
             gcs_uploader: GCS uploader instance
             llm_extractor: LLM extractor instance
+            sap_integrator: Optional SAP integrator instance for enriching documents
         """
         self.dao = dao
         self.gcs_uploader = gcs_uploader
         self.llm_extractor = llm_extractor
+        self.sap_integrator = sap_integrator
     
     async def process_email(self, email_data: Dict[str, Any], batch_run_id: str, 
                            payment_processor) -> bool:
@@ -123,7 +125,16 @@ class EmailProcessor:
                     logger.info(f"  Settlement Table: {len(llm_output.get('settlementTable', []))} items")
                     
                     # Process payment advice data and create records in Firestore
-                    await payment_processor.create_payment_advice_from_llm_output(llm_output, email_log.email_log_uuid)
+                    payment_advice_uuid = await payment_processor.create_payment_advice_from_llm_output(llm_output, email_log.email_log_uuid)
+                    
+                    # If payment advice was created and SAP integrator is available, enrich with SAP data
+                    if payment_advice_uuid and self.sap_integrator:
+                        try:
+                            logger.info(f"Enriching payment advice {payment_advice_uuid} with SAP data")
+                            success_count, fail_count = await self.sap_integrator.enrich_documents_with_sap_data(payment_advice_uuid)
+                            logger.info(f"SAP enrichment complete: {success_count} successful updates, {fail_count} failed updates")
+                        except Exception as sap_error:
+                            logger.error(f"Error during SAP enrichment: {str(sap_error)}")
                     
                     processed_attachments += 1
                     

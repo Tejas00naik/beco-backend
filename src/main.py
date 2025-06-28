@@ -10,6 +10,7 @@ import logging
 import asyncio
 import argparse
 from typing import Literal
+from datetime import datetime
 from dotenv import load_dotenv
 from os.path import abspath, dirname
 
@@ -47,11 +48,26 @@ async def main():
     parser.add_argument("--gmail", action="store_true", help="Use Gmail adapter instead of mock email reader")
     parser.add_argument("--credentials", default=DEFAULT_GMAIL_CREDENTIALS_PATH, 
                       help=f"Path to Gmail API credentials file (default: {DEFAULT_GMAIL_CREDENTIALS_PATH})")
+    parser.add_argument("--start-date", help="Start date for email fetching in YYYY-MM-DD format")
     
     args = parser.parse_args()
     
     # Also check environment variables
     is_test = args.test or os.environ.get("TEST_MODE", "false").lower() == "true"
+    
+    # Parse start date if provided
+    start_date = None
+    if args.start_date:
+        try:
+            start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
+            logger.info(f"Using custom start date: {start_date}")
+        except ValueError:
+            logger.error(f"Invalid start date format: {args.start_date}. Should be YYYY-MM-DD")
+            return
+    
+    # Set environment variable for batch worker
+    if start_date:
+        os.environ["INITIAL_FETCH_START_DATE"] = args.start_date
     
     # Initialize and run the batch worker
     worker = BatchWorker(
@@ -59,7 +75,8 @@ async def main():
         mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
         run_mode=args.mode,
         use_gmail=args.gmail,
-        gmail_credentials_path=args.credentials
+        gmail_credentials_path=args.credentials,
+        since_timestamp=start_date if start_date else None  # Pass the start date directly to BatchWorker
     )
     
     logger.info(f"Using hardcoded mailbox ID: {TARGET_MAILBOX_ID}")

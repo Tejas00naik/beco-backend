@@ -11,8 +11,9 @@ ALLOWED_MAILBOX_IDS = ["me"]  # List of allowed mailbox IDs (currently only one)
 
 # Email fetch defaults
 DEFAULT_FETCH_DAYS = 0  # Default days to look back for emails (0 = only today)
-from datetime import datetime
-INITIAL_FETCH_START_DATE = datetime.now().strftime('%Y-%m-%d')  # Start from today
+
+# Check for environment variable override first
+INITIAL_FETCH_START_DATE = os.environ.get("INITIAL_FETCH_START_DATE", datetime.now().strftime('%Y-%m-%d'))
 
 # Collection prefixes
 TEST_COLLECTION_PREFIX = "dev_"
