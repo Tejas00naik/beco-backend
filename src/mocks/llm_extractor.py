@@ -211,12 +211,14 @@ class MockLLMExtractor:
                 {
                     "invoiceNumber": f"INV-{hash(filename) % 10000:04d}",
                     "invoiceDate": (current_date - timedelta(days=30)).strftime("%d-%b-%Y").upper(),
-                    "bookingAmount": float(f"{(hash(filename) % 100000) / 100:.2f}")
+                    "bookingAmount": float(f"{(hash(filename) % 100000) / 100:.2f}"),
+                    "totalSettlementAmount": float(f"{(hash(filename) % 100000) / 100:.2f}")
                 },
                 {
                     "invoiceNumber": f"INV-{(hash(filename) + 1) % 10000:04d}",
                     "invoiceDate": (current_date - timedelta(days=15)).strftime("%d-%b-%Y").upper(),
-                    "bookingAmount": float(f"{(hash(filename + 'second') % 50000) / 100:.2f}")
+                    "bookingAmount": float(f"{(hash(filename + 'second') % 50000) / 100:.2f}"),
+                    "totalSettlementAmount": float(f"{(hash(filename + 'second') % 50000) / 100:.2f}")
                 }
             ],
             "otherDocTable": [

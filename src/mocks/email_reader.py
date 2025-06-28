@@ -251,14 +251,14 @@ Finance Team
             # Generate and save the mock email
             email = self._generate_mock_email(email_id)
             
-            # If using incremental mode, check the timestamp
-            # Skip timestamp filtering in test mode or if since_timestamp isn't a valid datetime
-            if since_timestamp and not self.is_test:
+            # Always include emails in test mode, regardless of timestamp
+            if not self.is_test and since_timestamp:
                 try:
                     received_at = datetime.fromisoformat(email["received_at"])
                     # Only compare if since_timestamp is a proper datetime
-                    if isinstance(since_timestamp, datetime) and received_at <= since_timestamp:
-                        # Skip emails older than or equal to the since_timestamp
+                    if isinstance(since_timestamp, datetime) and received_at < since_timestamp:
+                        # Skip emails older than the since_timestamp
+                        # We want emails that arrived ON or AFTER the since_timestamp
                         continue
                 except (ValueError, TypeError):
                     # If we can't parse the timestamp or compare, just include the email
