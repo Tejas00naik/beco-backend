@@ -11,8 +11,8 @@ import json
 import logging
 import asyncio
 import uuid
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Union, Literal, Set
+from datetime import datetime, timedelta, date
+from typing import Dict, List, Any, Optional, Tuple, Union, Literal, Set
 from pathlib import Path
 import argparse
 from dotenv import load_dotenv
@@ -43,8 +43,9 @@ from models.firestore_dao import FirestoreDAO
 
 # Import adapters
 from src.adapters.gcs_uploader import GCSUploader
-from src.adapters.gmail_reader import GmailReader
+from src.adapters.gmail_reader import GmailReader, GMAIL_AVAILABLE
 from src.config import DEFAULT_GCS_BUCKET_NAME
+from src.services.legal_entity_lookup import LegalEntityLookupService
 
 # Import configuration
 from src.config import (
@@ -136,12 +137,13 @@ class BatchWorker:
             self.email_reader = GmailReader(credentials_path=gmail_credentials_path, mailbox_id=mailbox_id)
             logger.info(f"Using Gmail reader with mailbox_id={mailbox_id}")
         else:
-            self.email_reader = MockEmailReader(mailbox_id=mailbox_id)
-            logger.info(f"Using mock email reader with mailbox_id={mailbox_id}")
+            self.email_reader = MockEmailReader(is_test=True, max_emails=int(os.environ.get("MOCK_EMAIL_MAX_COUNT", "5")))
+            logger.info(f"Using mock email reader")
             
-        # Initialize LLM extractor and SAP caller (always use mocks for now)
+        # Initialize LLM extractor, SAP caller, and legal entity lookup service
         self.llm_extractor = MockLLMExtractor()
         self.sap_caller = MockSapCaller()
+        self.legal_entity_lookup = LegalEntityLookupService(dao=self.dao)
         
         # Initialize GCS uploader using bucket name from environment variable or default
         self.gcs_uploader = None
@@ -197,9 +199,10 @@ class BatchWorker:
             email_log_uuid = email_data.get("email_id", str(uuid.uuid4()))
             # The original gmail_id is not needed in our simplified schema
             
-            # Extract components from the email
-            raw_email_data = email_data["raw_email"]
-            text_content = email_data.get("text_content")
+            # Extract components from the email - handle both mock and real emails
+            raw_email_data = email_data.get("raw_email")
+            # For mock emails, use 'content' as text_content if raw_email is not available
+            text_content = email_data.get("text_content") or email_data.get("content")
             html_content = email_data.get("html_content")
             attachments = email_data.get("attachments", [])
             
@@ -299,12 +302,8 @@ class BatchWorker:
                         logger.info(f"  Other Doc Table: {len(llm_output.get('otherDocTable', []))} items")
                         logger.info(f"  Settlement Table: {len(llm_output.get('settlementTable', []))} items")
                         
-                        # In a production implementation, we would now:  
-                        # 1. Create PaymentAdvice record from metaTable
-                        # 2. Create Invoice records from invoiceTable  
-                        # 3. Create OtherDoc records from otherDocTable
-                        # 4. Create Settlement records from settlementTable
-                        # 5. Update EmailLog with group_uuids extracted from the LLM output
+                        # Process payment advice data and create records in Firestore
+                        await self.create_payment_advice_from_llm_output(llm_output, email_log.email_log_uuid)
                         
                         processed_attachments += 1
                         
@@ -341,8 +340,96 @@ class BatchWorker:
             
             return False
 
+    async def create_payment_advice_from_llm_output(self, llm_output: Dict[str, Any], email_log_uuid: str) -> Optional[str]:
+        """
+        Process payment advice data from LLM output and create PaymentAdvice record in Firestore.
+        
+        Args:
+            llm_output: The structured output from LLM containing metaTable, invoiceTable, etc.
+            email_log_uuid: The UUID of the EmailLog this payment advice is associated with
+            
+        Returns:
+            The UUID of the created payment advice, or None if creation failed
+        """
+        try:
+            # Extract metadata from LLM output
+            meta_table = llm_output.get('metaTable', {})
+            
+            # Generate a unique payment advice UUID
+            payment_advice_uuid = str(uuid.uuid4())  # Use uuid.uuid4() instead of uuid4
+            
+            # Extract payer and payee names from LLM output
+            payer_name = meta_table.get('payersLegalName')
+            payee_name = meta_table.get('payeesLegalName')
+            
+            # Get legal entity UUID using two-step lookup (direct lookup + LLM fallback)
+            legal_entity_uuid = None
+            if payer_name:
+                try:
+                    legal_entity_uuid = await self.legal_entity_lookup.lookup_legal_entity_uuid(payer_name)
+                    logger.info(f"Looked up legal entity UUID for payer '{payer_name}': {legal_entity_uuid}")
+                except ValueError as e:
+                    # Legal entity not registered - log error but continue with null UUID
+                    logger.error(f"Legal entity lookup error: {str(e)}")
+                    # For now, we'll continue with a null legal_entity_uuid
+                    # In production, you might want to flag this payment advice or handle differently
+            
+            # Parse payment advice date
+            payment_advice_date = None
+            date_str = meta_table.get('paymentAdviceDate')
+            if date_str:
+                try:
+                    # Try to parse date string in common formats
+                    formats = ['%d-%b-%Y', '%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y']
+                    for fmt in formats:
+                        try:
+                            payment_advice_date = datetime.strptime(date_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                except Exception as e:
+                    logger.warning(f"Failed to parse payment advice date '{date_str}': {str(e)}")
+            
+            # Extract other payment advice details
+            payment_advice_number = meta_table.get('paymentAdviceNumber')
+            
+            # Calculate payment advice amount as the sum of all invoice amounts minus the sum of all other doc amounts
+            # This is just an example calculation - adjust based on your business rules
+            invoice_amounts = [float(inv.get('bookingAmount', 0) or 0) for inv in llm_output.get('invoiceTable', [])]
+            other_doc_amounts = [float(doc.get('otherDocAmount', 0) or 0) for doc in llm_output.get('otherDocTable', [])]
+            
+            payment_advice_amount = sum(invoice_amounts) + sum(other_doc_amounts)  # other_doc_amounts may be negative
+            
+            # Create PaymentAdvice object
+            payment_advice = PaymentAdvice(
+                payment_advice_uuid=payment_advice_uuid,
+                email_log_uuid=email_log_uuid,
+                legal_entity_uuid=legal_entity_uuid,
+                payment_advice_number=payment_advice_number,
+                payment_advice_date=payment_advice_date,
+                payment_advice_amount=payment_advice_amount,
+                payment_advice_status=PaymentAdviceStatus.NEW,
+                payer_name=payer_name,
+                payee_name=payee_name
+            )
+            
+            # Add PaymentAdvice to Firestore
+            await self.dao.add_document("payment_advice", payment_advice_uuid, payment_advice.__dict__)
+            
+            logger.info(f"Created payment advice {payment_advice_uuid} for email {email_log_uuid}")
+            
+            # TODO: Process invoices, other_docs, and settlements from LLM output
+            # This would involve creating records in the respective collections
+            # and linking them to this payment_advice_uuid
+            
+            return payment_advice_uuid
+            
+        except Exception as e:
+            logger.error(f"Failed to process payment advice: {str(e)}")
+            return None
+    
     async def process_payment_advice(self, email_log_uuid: str, pa_data: Dict[str, Any], 
-                               email_data: Dict[str, Any], pa_index: int) -> None:
+                                email_data: Dict[str, Any], pa_index: int) -> None:
         """
         Process a single payment advice and create all related records.
         

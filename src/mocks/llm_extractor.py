@@ -7,6 +7,7 @@ credit notes, and settlement details.
 """
 
 import logging
+import random
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, date, timedelta
 
@@ -203,8 +204,8 @@ class MockLLMExtractor:
             "metaTable": {
                 "paymentAdviceDate": date_str,
                 "paymentAdviceNumber": advice_number,
-                "payersLegalName": f"Payer Corp {hash(filename) % 10}",
-                "payeesLegalName": f"Payee LLC {hash(filename) % 5}"
+                "payersLegalName": "Clicktech Retail Private Limited",
+                "payeesLegalName": "Beco Trading Ltd"
             },
             "invoiceTable": [
                 {

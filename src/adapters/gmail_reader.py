@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 # This scope allows read-only access to Gmail
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
+# Indicate that Gmail adapter is available
+GMAIL_AVAILABLE = True
+
 class GmailReader:
     """Gmail API-based email reader implementation."""
 
