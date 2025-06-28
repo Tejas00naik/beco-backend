@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import sys
+from dotenv import load_dotenv
 
 # Add the project root to the path so we can import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -75,6 +76,13 @@ async def seed_customers():
     """
     Seed customer data in Firestore.
     """
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Display loaded Firestore configuration
+    logger.info(f"Using Firestore Project ID: {os.environ.get('FIRESTORE_PROJECT_ID')}")
+    logger.info(f"Using Firestore Database ID: {os.environ.get('FIRESTORE_DATABASE_ID')}")
+    
     dao = FirestoreDAO()
     
     # Check if any customers already exist
@@ -109,5 +117,5 @@ async def seed_customers():
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(seed_customers())
+    # Use asyncio.run() instead of manually managing the event loop
+    asyncio.run(seed_customers())

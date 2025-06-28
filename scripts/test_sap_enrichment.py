@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+from dotenv import load_dotenv
 
 # Add the project root to the path so we can import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,8 +59,8 @@ async def list_recent_payment_advices():
     # Query for payment advices, ordered by created_at (most recent first)
     payment_advices = await dao.query_documents(
         "payment_advice",
-        order_by="created_at",
-        direction="DESCENDING",
+        order_by="created_at",   # Use string for order_by
+        desc=True,              # Use desc=True instead of descending
         limit=5
     )
     
@@ -83,6 +84,12 @@ async def list_recent_payment_advices():
 async def main():
     """Main test function"""
     try:
+        # Load environment variables from .env file
+        load_dotenv()
+        
+        # Display Firestore configuration
+        logger.info(f"Using Firestore Project ID: {os.environ.get('FIRESTORE_PROJECT_ID')}")
+        logger.info(f"Using Firestore Database ID: {os.environ.get('FIRESTORE_DATABASE_ID', 'beco-payment-advice-dev')}")
         # First, seed customer data if needed
         await seed_customers()
         

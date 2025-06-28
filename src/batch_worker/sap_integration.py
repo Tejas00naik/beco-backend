@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List, Tuple
 # Import models
 from models.schemas import (
     PaymentAdvice, Settlement, Invoice, OtherDoc,
-    InvoiceStatus, SettlementStatus, OtherDocStatus
+    InvoiceStatus, SettlementStatus, OtherDocType
 )
 
 logger = logging.getLogger(__name__)
