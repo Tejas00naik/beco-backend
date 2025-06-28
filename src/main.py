@@ -68,6 +68,56 @@ GMAIL_AVAILABLE = True
 class BatchWorker:
     """Main orchestrator for the email processing batch worker."""
     
+    def _parse_date(self, date_str: Optional[str]) -> Optional[date]:
+        """
+        Parse a date string into a Python date object.
+        
+        Args:
+            date_str: String representation of a date
+            
+        Returns:
+            Date object if parsing succeeds, None otherwise
+        """
+        if not date_str:
+            return None
+            
+        try:
+            # Try to parse date string in common formats
+            formats = ['%d-%b-%Y', '%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y']
+            for fmt in formats:
+                try:
+                    return datetime.strptime(date_str, fmt).date()
+                except ValueError:
+                    continue
+            # If we get here, none of the formats matched
+            logger.warning(f"Failed to parse date '{date_str}' with standard formats")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to parse date '{date_str}': {str(e)}")
+            return None
+    
+    def _parse_amount(self, amount_str: Optional[str]) -> Optional[float]:
+        """
+        Parse a currency amount string into a float.
+        
+        Args:
+            amount_str: String representation of an amount
+            
+        Returns:
+            Float value if parsing succeeds, None otherwise
+        """
+        if not amount_str:
+            return None
+            
+        try:
+            # Remove currency symbols, commas, and other non-numeric characters
+            # except for decimal point and negative sign
+            clean_str = ''.join(c for c in amount_str if c.isdigit() or c in '.-')
+            return float(clean_str)
+        except Exception as e:
+            logger.warning(f"Failed to parse amount '{amount_str}': {str(e)}")
+            return None
+    
     async def check_document_exists(self, collection: str, field: str, value: str) -> bool:
         """
         Check if a document with the given field value already exists in the collection.
@@ -343,16 +393,16 @@ class BatchWorker:
     async def create_payment_advice_from_llm_output(self, llm_output: Dict[str, Any], email_log_uuid: str) -> Optional[str]:
         """
         Process payment advice data from LLM output and create PaymentAdvice record in Firestore.
+        Also update EmailLog.group_uuids with the legal entity's group_uuid.
         
         Args:
             llm_output: The structured output from LLM containing metaTable, invoiceTable, etc.
-            email_log_uuid: The UUID of the EmailLog this payment advice is associated with
+            email_log_uuid: UUID of the email being processed
             
         Returns:
             The UUID of the created payment advice, or None if creation failed
         """
         try:
-            # Extract metadata from LLM output
             meta_table = llm_output.get('metaTable', {})
             
             # Generate a unique payment advice UUID
@@ -360,45 +410,45 @@ class BatchWorker:
             
             # Extract payer and payee names from LLM output
             payer_name = meta_table.get('payersLegalName')
-            payee_name = meta_table.get('payeesLegalName')
+            payee_name = meta_table.get('payeesLegalName') 
             
-            # Get legal entity UUID using two-step lookup (direct lookup + LLM fallback)
+            # Extract other payment advice fields
+            payment_advice_number = meta_table.get('paymentAdviceNumber')
+            payment_advice_date = self._parse_date(meta_table.get('paymentAdviceDate'))
+            payment_advice_amount = self._parse_amount(meta_table.get('paymentAdviceAmount'))
+            
+            # Look up legal entity UUID by payer_name
             legal_entity_uuid = None
+            group_uuid = None
             if payer_name:
                 try:
                     legal_entity_uuid = await self.legal_entity_lookup.lookup_legal_entity_uuid(payer_name)
                     logger.info(f"Looked up legal entity UUID for payer '{payer_name}': {legal_entity_uuid}")
                 except ValueError as e:
-                    # Legal entity not registered - log error but continue with null UUID
-                    logger.error(f"Legal entity lookup error: {str(e)}")
-                    # For now, we'll continue with a null legal_entity_uuid
-                    # In production, you might want to flag this payment advice or handle differently
-            
-            # Parse payment advice date
-            payment_advice_date = None
-            date_str = meta_table.get('paymentAdviceDate')
-            if date_str:
-                try:
-                    # Try to parse date string in common formats
-                    formats = ['%d-%b-%Y', '%d/%m/%Y', '%Y-%m-%d', '%m/%d/%Y']
-                    for fmt in formats:
-                        try:
-                            payment_advice_date = datetime.strptime(date_str, fmt).date()
-                            break
-                        except ValueError:
-                            continue
-                except Exception as e:
-                    logger.warning(f"Failed to parse payment advice date '{date_str}': {str(e)}")
-            
-            # Extract other payment advice details
-            payment_advice_number = meta_table.get('paymentAdviceNumber')
-            
-            # Calculate payment advice amount as the sum of all invoice amounts minus the sum of all other doc amounts
-            # This is just an example calculation - adjust based on your business rules
-            invoice_amounts = [float(inv.get('bookingAmount', 0) or 0) for inv in llm_output.get('invoiceTable', [])]
-            other_doc_amounts = [float(doc.get('otherDocAmount', 0) or 0) for doc in llm_output.get('otherDocTable', [])]
-            
-            payment_advice_amount = sum(invoice_amounts) + sum(other_doc_amounts)  # other_doc_amounts may be negative
+                    logger.warning(f"Legal entity lookup error: {str(e)}")
+                    # Continue with null legal_entity_uuid
+                
+                # If we found a legal entity, fetch its group_uuid
+                if legal_entity_uuid:
+                    legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
+                    if legal_entity and "group_uuid" in legal_entity and legal_entity["group_uuid"]:
+                        group_uuid = legal_entity["group_uuid"]
+                        logger.info(f"Found group_uuid '{group_uuid}' for legal entity '{legal_entity_uuid}'")
+                        
+                        # Update EmailLog.group_uuids array - upsert group_uuid if not already present
+                        email_log = await self.dao.get_document("email_log", email_log_uuid)
+                        if email_log:
+                            # Initialize group_uuids as empty list if it doesn't exist
+                            group_uuids = email_log.get("group_uuids", [])
+                            
+                            # Only add if not already in the list
+                            if group_uuid not in group_uuids:
+                                group_uuids.append(group_uuid)
+                                await self.dao.update_document("email_log", email_log_uuid, {
+                                    "group_uuids": group_uuids,
+                                    "updated_at": datetime.utcnow()
+                                })
+                                logger.info(f"Updated email_log {email_log_uuid} with group_uuid {group_uuid}")
             
             # Create PaymentAdvice object
             payment_advice = PaymentAdvice(

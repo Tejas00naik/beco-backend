@@ -149,7 +149,7 @@ class FirestoreDAO:
         """
         try:
             doc_ref = self.db.collection(self._get_collection_name(collection)).document(document_id)
-            doc = doc_ref.get()
+            doc = await doc_ref.get()
             
             if doc.exists:
                 return doc.to_dict()
