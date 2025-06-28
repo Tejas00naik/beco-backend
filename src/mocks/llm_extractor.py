@@ -193,13 +193,28 @@ class MockLLMExtractor:
         filename = attachment_data.get('filename', 'unknown_file')
         logger.info(f"Processing attachment '{filename}' as payment advice")
         
-        # Generate mock metadata based on attachment filename
-        # In a real implementation, this would come from the LLM's analysis of the attachment
-        current_date = datetime.utcnow()
-        date_str = current_date.strftime("%d-%b-%Y").upper()
-        advice_number = f"PA-{hash(filename) % 1000000:06d}"
+        # Use fixed date and payment advice numbers for complete determinism
+        fixed_date = datetime(2025, 6, 1)
+        date_str = "01-JUN-2025"
         
-        # Create a mock LLM output in the standardized format
+        # Deterministic payment advice number based on file_hash
+        file_hash = hash(filename) % 5
+        advice_number = f"PA-{100000 + file_hash}"
+        
+        # Create a mock LLM output in the standardized format with fixed document numbers that match SAP mock data
+        # Use a single fixed set of document numbers for all runs - these match SAP mock client data
+        # Always use the first payment advice set for absolute consistency
+        invoice_numbers = ["INV-1234", "INV-5678"]
+        other_doc_numbers = ["BDPO-12345", "TDS-CM-1234"]
+        
+        # Fixed amounts for complete determinism
+        invoice_amount1 = 35000.00
+        invoice_amount2 = 42000.00
+            
+        # Fixed TDS and BDPO amounts (10% of invoice amounts)
+        tds_amount = round(invoice_amount2 * 0.10, 2)  # 4200.00
+        bdpo_amount = round(invoice_amount1 * 0.10, 2)  # 3500.00
+        
         output = {
             "metaTable": {
                 "paymentAdviceDate": date_str,
@@ -209,40 +224,40 @@ class MockLLMExtractor:
             },
             "invoiceTable": [
                 {
-                    "invoiceNumber": f"INV-{hash(filename) % 10000:04d}",
-                    "invoiceDate": (current_date - timedelta(days=30)).strftime("%d-%b-%Y").upper(),
-                    "bookingAmount": float(f"{(hash(filename) % 100000) / 100:.2f}"),
-                    "totalSettlementAmount": float(f"{(hash(filename) % 100000) / 100:.2f}")
+                    "invoiceNumber": invoice_numbers[0],
+                    "invoiceDate": "01-MAY-2025",  # Fixed date
+                    "bookingAmount": invoice_amount1,
+                    "totalSettlementAmount": invoice_amount1
                 },
                 {
-                    "invoiceNumber": f"INV-{(hash(filename) + 1) % 10000:04d}",
-                    "invoiceDate": (current_date - timedelta(days=15)).strftime("%d-%b-%Y").upper(),
-                    "bookingAmount": float(f"{(hash(filename + 'second') % 50000) / 100:.2f}"),
-                    "totalSettlementAmount": float(f"{(hash(filename + 'second') % 50000) / 100:.2f}")
+                    "invoiceNumber": invoice_numbers[1],
+                    "invoiceDate": "15-MAY-2025",  # Fixed date
+                    "bookingAmount": invoice_amount2,
+                    "totalSettlementAmount": invoice_amount2
                 }
             ],
             "otherDocTable": [
                 {
                     "otherDocType": "BDPO",
-                    "otherDocNumber": f"BDPO-{hash(filename) % 100000:05d}",
-                    "otherDocAmount": float(f"-{(hash(filename) % 100000) / 100:.2f}")
+                    "otherDocNumber": other_doc_numbers[0],
+                    "otherDocAmount": -bdpo_amount
                 },
                 {
                     "otherDocType": "TDS",
-                    "otherDocNumber": f"TDS-CM-{hash(filename) % 10000:04d}",
-                    "otherDocAmount": float(f"-{(hash(filename + 'tds') % 1000) / 100:.2f}")
+                    "otherDocNumber": other_doc_numbers[1],
+                    "otherDocAmount": -tds_amount
                 }
             ],
             "settlementTable": [
                 {
-                    "settlementDocNumber": f"BDPO-{hash(filename) % 100000:05d}", # Same as otherDocNumber above
-                    "invoiceNumber": f"INV-{hash(filename) % 10000:04d}", # Both invoice and other doc numbers are provided
-                    "settlementAmount": float(f"-{(hash(filename + 'settle1') % 1000) / 100:.2f}")
+                    "settlementDocNumber": other_doc_numbers[0],
+                    "invoiceNumber": invoice_numbers[0],
+                    "settlementAmount": -bdpo_amount
                 },
                 {
-                    "settlementDocNumber": f"TDS-CM-{hash(filename) % 10000:04d}", # Same as otherDocNumber above
-                    "invoiceNumber": f"INV-{(hash(filename) + 1) % 10000:04d}", # Both invoice and other doc numbers are provided
-                    "settlementAmount": float(f"-{(hash(filename + 'settle2') % 1000) / 100:.2f}")
+                    "settlementDocNumber": other_doc_numbers[1],
+                    "invoiceNumber": invoice_numbers[1],
+                    "settlementAmount": -tds_amount
                 }
             ]
         }

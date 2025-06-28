@@ -3,6 +3,9 @@ and storing it in Firestore.
 """
 
 import logging
+import os
+import uuid
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Literal
 
@@ -21,7 +24,8 @@ import src.batch_worker.helpers as helpers
 from src.config import (
     TARGET_MAILBOX_ID,
     DEFAULT_FETCH_DAYS,
-    DEFAULT_GMAIL_CREDENTIALS_PATH
+    DEFAULT_GMAIL_CREDENTIALS_PATH,
+    DEFAULT_GCS_BUCKET_NAME
 )
 
 logger = logging.getLogger(__name__)
@@ -34,7 +38,8 @@ class BatchWorker:
                  mailbox_id: str = "default",
                  run_mode: Literal["incremental", "full_refresh"] = "incremental",
                  use_gmail: bool = False,
-                 gmail_credentials_path: str = None):
+                 gmail_credentials_path: str = None,
+                 since_timestamp: Optional[datetime] = None):
         """
         Initialize the batch worker.
         
@@ -49,6 +54,7 @@ class BatchWorker:
         self.mailbox_id = mailbox_id
         self.run_mode = run_mode
         self.collection_prefix = "dev_" if is_test else ""
+        self.initial_timestamp = since_timestamp  # Store the provided timestamp
         
         logger.info(f"Initializing batch worker. is_test={is_test}, mailbox_id={mailbox_id}")
         
@@ -57,7 +63,6 @@ class BatchWorker:
         
         # Initialize GCS uploader
         from src.adapters.gcs_uploader import GCSUploader
-        from src.config import DEFAULT_GCS_BUCKET_NAME
         self.gcs_uploader = GCSUploader(bucket_name=DEFAULT_GCS_BUCKET_NAME)
         
         # Initialize email reader based on configuration
@@ -85,15 +90,15 @@ class BatchWorker:
         from src.services.legal_entity_lookup import LegalEntityLookupService
         self.legal_entity_lookup = LegalEntityLookupService(self.dao)
         
-        # Initialize SAP caller
-        from src.mocks.sap_caller import MockSapCaller
-        self.sap_caller = MockSapCaller()
+        # Initialize SAP client
+        from src.mocks.sap_client import MockSapClient
+        self.sap_client = MockSapClient()
         
         # Initialize component modules
         self.batch_manager = BatchManager(self.dao, is_test, self.mailbox_id, self.run_mode)
-        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_extractor)
+        self.sap_integrator = SapIntegrator(self.dao, self.sap_client)
+        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_extractor, self.sap_integrator)
         self.payment_processor = PaymentProcessor(self.dao, self.legal_entity_lookup)
-        self.sap_integrator = SapIntegrator(self.dao, self.sap_caller)
         
         # Initialize counters
         self.emails_processed = 0
@@ -142,27 +147,26 @@ class BatchWorker:
     async def run(self):
         """Main entry point for the batch worker."""
         try:
-            from datetime import datetime, timedelta
             # Start batch run
             await self.start_batch_run()
             
             # Determine since_timestamp based on run mode
             since_timestamp = None
             
-            if self.run_mode == "full_refresh":
-                # For full refresh mode, typically use a date far in the past
-                import os
-                from datetime import datetime, timedelta
-                
-                # Get max historical days from environment variable or use default (e.g., 180 days)
-                max_days = os.environ.get("MAX_HISTORICAL_DAYS", "180")
+            # If initial_timestamp was provided in constructor, use it directly
+            if self.initial_timestamp:
+                since_timestamp = self.initial_timestamp
+                logger.info(f"Using provided initial timestamp: {since_timestamp}")
+            # Otherwise set the initial timestamp based on run mode
+            elif self.run_mode == "full_refresh":
                 try:
+                    # Check for MAX_HISTORICAL_DAYS env variable
+                    max_days = os.environ.get("MAX_HISTORICAL_DAYS", "180")
                     days = int(max_days)
                     since_timestamp = datetime.now() - timedelta(days=days)
                 except ValueError:
                     logger.warning(f"Invalid MAX_HISTORICAL_DAYS value: {max_days}. Using default of 180 days.")
                     since_timestamp = datetime.now() - timedelta(days=180)
-                    
                 logger.info(f"Full refresh mode: fetching emails since {since_timestamp}")
                     
             else:  # incremental mode
@@ -185,23 +189,24 @@ class BatchWorker:
                             since_timestamp = prev_start_ts - timedelta(hours=1)
                             logger.info(f"Incremental mode: using timestamp from previous batch run: {since_timestamp}")
                     
-                    # If no previous run or no timestamp available, check for INITIAL_FETCH_START_DATE
-                    if not since_timestamp:
-                        import os
-                        initial_date_str = os.environ.get("INITIAL_FETCH_START_DATE", None)
-                        if initial_date_str:
-                            try:
-                                # Parse YYYY-MM-DD format
-                                since_timestamp = datetime.strptime(initial_date_str, "%Y-%m-%d")
-                                logger.info(f"Using INITIAL_FETCH_START_DATE: {since_timestamp}")
-                            except ValueError:
-                                logger.warning(f"Invalid INITIAL_FETCH_START_DATE format: {initial_date_str}. Using default.")
-                                # Default to 7 days ago if parsing fails
+                    # Check for INITIAL_FETCH_START_DATE regardless of previous batch run
+                    # This allows overriding the date even when a previous batch exists
+                    import os
+                    initial_date_str = os.environ.get("INITIAL_FETCH_START_DATE", None)
+                    if initial_date_str:
+                        try:
+                            # Parse YYYY-MM-DD format
+                            since_timestamp = datetime.strptime(initial_date_str, "%Y-%m-%d")
+                            logger.info(f"Found INITIAL_FETCH_START_DATE, overriding timestamp: {since_timestamp}")
+                        except ValueError:
+                            logger.warning(f"Invalid INITIAL_FETCH_START_DATE format: {initial_date_str}. Using default or previous.")
+                            if not since_timestamp:
+                                # Default to 7 days ago if parsing fails and no previous timestamp
                                 since_timestamp = datetime.now() - timedelta(days=7)
-                        else:
-                            # Default to configured days ago if no environment variable
-                            since_timestamp = datetime.now() - timedelta(days=DEFAULT_FETCH_DAYS)
-                            logger.info(f"First run: No INITIAL_FETCH_START_DATE set, using last {DEFAULT_FETCH_DAYS} days")
+                    elif not since_timestamp:  # Only set default if no timestamp and no environment variable
+                        # Default to configured days ago if no environment variable
+                        since_timestamp = datetime.now() - timedelta(days=DEFAULT_FETCH_DAYS)
+                        logger.info(f"No start date specified, using last {DEFAULT_FETCH_DAYS} days")
                 except Exception as e:
                     logger.error(f"Error finding previous batch run: {str(e)}")
                     # Default to 7 days ago
