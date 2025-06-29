@@ -122,27 +122,15 @@ class PaymentProcessor:
                     logger.warning("Skipping invoice with missing invoice_number")
                     continue
                     
-                # Check if invoice number already exists (uniqueness constraint)
-                invoice_docs = await self.dao.query_documents("invoice", [("invoice_number", "==", invoice_number)])
-                if invoice_docs and len(invoice_docs) > 0:
-                    # Update existing invoice with the new payment_advice_uuid
-                    existing_invoice = invoice_docs[0]
-                    existing_invoice_uuid = existing_invoice.get("invoice_uuid")
-                    logger.info(f"Invoice with number {invoice_number} already exists - associating with new payment advice")
-                    
-                    await self.dao.update_document("invoice", existing_invoice_uuid, {
-                        "payment_advice_uuid": payment_advice_uuid,
-                        "updated_at": datetime.utcnow()
-                    })
-                    continue
-                
                 # Parse invoice date and amounts
                 invoice_date = parse_date(invoice_data.get('invoiceDate'))
                 booking_amount = parse_amount(invoice_data.get('bookingAmount'))
                 total_settlement_amount = parse_amount(invoice_data.get('totalSettlementAmount'))
                 
-                # Check if invoice already exists in the database (uniqueness constraint)
+                # Check if invoice number already exists (uniqueness constraint)
                 invoice_docs = await self.dao.query_documents("invoice", [("invoice_number", "==", invoice_number)])
+                
+                # Check if this exact combination of invoice_number and payment_advice_uuid already exists
                 
                 if invoice_docs and len(invoice_docs) > 0:
                     # We found existing invoices with this number
@@ -161,7 +149,8 @@ class PaymentProcessor:
                         continue
                     else:
                         # There are invoices with this number but for different payment advices
-                        # Since we're enforcing (payment_advice_uuid, invoice_number) uniqueness, we can create a new one
+                        # Since we're enforcing (payment_advice_uuid, invoice_number) uniqueness, we need to create a new one
+                        # This enforces our requirement that invoice table should be unique on (payment_advice_uuid, invoice_number)
                         invoice_uuid = str(uuid.uuid4())
                         invoice = Invoice(
                             invoice_uuid=invoice_uuid,
@@ -227,17 +216,30 @@ class PaymentProcessor:
                         continue
                     else:
                         # There are other docs with this number but for different payment advices
-                        # Since we're enforcing (payment_advice_uuid, other_doc_number) uniqueness, we can create a new one
-                        # But first we check if we should associate an existing one with this payment advice
-                        existing_other_doc = other_doc_docs[0]
-                        existing_other_doc_uuid = existing_other_doc.get("other_doc_uuid")
-                        logger.info(f"Other doc with number {other_doc_number} exists but for different payment advice - associating with new payment advice")
+                        # Since we're enforcing (payment_advice_uuid, other_doc_number) uniqueness, we need to create a new one
+                        # This enforces our requirement that other_doc table should be unique on (payment_advice_uuid, other_doc_number)
+                        other_doc_uuid = str(uuid.uuid4())
                         
-                        await self.dao.update_document("other_doc", existing_other_doc_uuid, {
-                            "payment_advice_uuid": payment_advice_uuid,
-                            "updated_at": datetime.utcnow()
-                        })
-                        other_doc_uuids[other_doc_number] = existing_other_doc_uuid
+                        # Parse other doc date and amount if available
+                        other_doc_date = parse_date(other_doc_data.get('otherDocDate'))
+                        other_doc_amount = parse_amount(other_doc_data.get('otherDocAmount'))
+                        
+                        # Create a new Other Doc object
+                        other_doc = OtherDoc(
+                            other_doc_uuid=other_doc_uuid,
+                            payment_advice_uuid=payment_advice_uuid,
+                            customer_uuid=None,  # Will be populated by SAP enrichment later
+                            other_doc_number=other_doc_number,
+                            other_doc_date=other_doc_date,
+                            other_doc_amount=other_doc_amount,
+                            other_doc_type=OtherDocType[other_doc_data.get('otherDocType', 'UNKNOWN')],
+                            sap_transaction_id=None  # Will be populated by SAP enrichment later
+                        )
+                        
+                        # Add Other Doc to Firestore
+                        await self.dao.add_document("other_doc", other_doc_uuid, other_doc.__dict__)
+                        logger.info(f"Created other doc {other_doc_uuid} with number {other_doc_number}")
+                        other_doc_uuids[other_doc_number] = other_doc_uuid
                         continue
                 
                 # Parse other doc date and amount
