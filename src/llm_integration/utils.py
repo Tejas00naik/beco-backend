@@ -18,21 +18,40 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
     Returns:
         Reformatted output suitable for PaymentProcessor
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Ensure we have valid input
+    if not llm_output or not isinstance(llm_output, dict):
+        logger.warning(f"Invalid LLM output format: {llm_output}")
+        return {}
+        
     processed_output = {}
     
     # Meta table -> metaTable fields
-    if "meta_table" in llm_output:
+    if "meta_table" in llm_output and llm_output["meta_table"] is not None and isinstance(llm_output["meta_table"], dict):
         meta = llm_output["meta_table"]
         # Extract and add to processed output with correct camelCase keys
         processed_output["paymentAdviceDate"] = meta.get("settlement_date")  # keep DD-MMM-YYYY format
         processed_output["paymentAdviceNumber"] = meta.get("payment_advice_number")
         processed_output["payersLegalName"] = meta.get("payer_legal_name")
         processed_output["payeesLegalName"] = meta.get("payee_legal_name")
+    else:
+        logger.warning("meta_table is missing or invalid in LLM output")
+        # Add default values to ensure the processor doesn't crash
+        processed_output["paymentAdviceDate"] = None
+        processed_output["paymentAdviceNumber"] = None
+        processed_output["payersLegalName"] = None
+        processed_output["payeesLegalName"] = None
     
     # Invoice table -> invoiceTable
-    if "invoice_table" in llm_output:
+    if "invoice_table" in llm_output and isinstance(llm_output["invoice_table"], list):
         invoiceTable = []
         for invoice in llm_output["invoice_table"]:
+            if not isinstance(invoice, dict):
+                logger.warning(f"Invalid invoice format in LLM output: {invoice}")
+                continue
+                
             invoice_entry = {
                 "invoiceNumber": invoice.get("invoice_number"),
                 "invoiceDate": invoice.get("invoice_date"),
@@ -41,17 +60,28 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
             }
             invoiceTable.append(invoice_entry)
         processed_output["invoiceTable"] = invoiceTable
+    else:
+        logger.warning("invoice_table is missing or invalid in LLM output")
+        processed_output["invoiceTable"] = []
     
     # settlement_table -> otherDocTable (1 row = 1 settlement document)
-    if "settlement_table" in llm_output:
+    if "settlement_table" in llm_output and isinstance(llm_output["settlement_table"], list):
         otherDocTable = []
         for settlement in llm_output["settlement_table"]:
+            if not isinstance(settlement, dict):
+                logger.warning(f"Invalid settlement format in LLM output: {settlement}")
+                continue
+                
             doc_type = settlement.get("settlement_doc_type")
             amount = settlement.get("settlement_amount")
             
             # Negate amount for cash-in credit doc types (BR, TDS, CN)
             if amount is not None and doc_type in ["BR", "TDS", "CN"]:
-                amount = -abs(amount)  # Ensure it's negative for credits
+                try:
+                    amount = -abs(float(amount)) if amount != '' else None  # Ensure it's negative for credits
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid settlement amount: {amount}")
+                    amount = None
                 
             other_doc_entry = {
                 "otherDocType": doc_type,
@@ -60,11 +90,18 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
             }
             otherDocTable.append(other_doc_entry)
         processed_output["otherDocTable"] = otherDocTable
+    else:
+        logger.warning("settlement_table is missing or invalid in LLM output")
+        processed_output["otherDocTable"] = []
     
     # reconciliation_statement -> settlementTable (links between settlement doc and invoice)
-    if "reconciliation_statement" in llm_output:
+    if "reconciliation_statement" in llm_output and isinstance(llm_output["reconciliation_statement"], list):
         settlementTable = []
         for recon in llm_output["reconciliation_statement"]:
+            if not isinstance(recon, dict):
+                logger.warning(f"Invalid reconciliation format in LLM output: {recon}")
+                continue
+                
             # Skip entries without invoice_number - they're not valid links
             if not recon.get("invoice_number"):
                 continue
@@ -74,7 +111,11 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
             
             # Negate amount for cash-in credit doc types (BR, TDS, CN)
             if amount is not None and doc_type in ["BR", "TDS", "CN"]:
-                amount = -abs(amount)  # Ensure it's negative for credits
+                try:
+                    amount = -abs(float(amount)) if amount != '' else None  # Ensure it's negative for credits
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid settlement amount: {amount}")
+                    amount = None
                 
             settlement_entry = {
                 # Doc type is not used in settlementTable as per mapping guide
@@ -84,6 +125,9 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
             }
             settlementTable.append(settlement_entry)
         processed_output["settlementTable"] = settlementTable
+    else:
+        logger.warning("reconciliation_statement is missing or invalid in LLM output")
+        processed_output["settlementTable"] = []
     
     return processed_output
 
