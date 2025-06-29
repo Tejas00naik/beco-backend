@@ -3,6 +3,8 @@
 import logging
 import uuid
 import random
+import csv
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -20,6 +22,8 @@ class MockSapClient:
         """
         # Sample BP (Business Partner) accounts - represents customers in SAP
         self.bp_accounts = {
+            "AMZCL1": {"name": "Amazon Clicktech Services Private Limited", "legal_entity": "amazon-clicktech-retail-123456"},
+            "AMZCL2": {"name": "Amazon Clicktech Services Private Limited", "legal_entity": "amazon-clicktech-retail-123456"},
             "BP001": {"name": "Amazon Seller Services", "legal_entity": "amazon-services-123456"},
             "BP002": {"name": "Amazon Development Center", "legal_entity": "amazon-development-123456"},
             "BP003": {"name": "Flipkart India Private Limited", "legal_entity": "flipkart-india-123456"},
@@ -27,9 +31,77 @@ class MockSapClient:
             "BP005": {"name": "Clicktech Retail Private Limited", "legal_entity": "amazon-clicktech-retail-123456"}
         }
         
-        # Generate mock transaction data
-        self.transactions = self._generate_mock_transactions()
+        # Load transaction data from CSV file
+        self.transactions = self._load_transactions_from_csv()
+        
+        # If CSV loading fails, fall back to generated transactions
+        if not self.transactions:
+            logger.warning("Failed to load transactions from CSV. Using generated mock data instead.")
+            self.transactions = self._generate_mock_transactions()
+            
         logger.info(f"Initialized mock SAP client with {len(self.bp_accounts)} BP accounts and {len(self.transactions)} transactions")
+    
+    def _load_transactions_from_csv(self) -> List[Dict[str, Any]]:
+        """
+        Load mock SAP transaction data from a CSV file.
+        
+        Returns:
+            List of mock transactions loaded from CSV
+        """
+        transactions = []
+        csv_file_path = os.path.join(os.getcwd(), 'data', 'sap_mock_transactions.csv')
+        
+        try:
+            if not os.path.exists(csv_file_path):
+                logger.warning(f"CSV file not found at {csv_file_path}")
+                return []
+                
+            with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    # Map CSV columns to transaction dict format
+                    doc_type = row.get('Doc_Type', '')
+                    doc_type_mapping = {
+                        'IN': 'invoice',
+                        'TDS': 'other_doc',
+                        'BR': 'other_doc',
+                        'JV': 'other_doc'
+                    }
+                    
+                    # Parse numeric values
+                    try:
+                        dr = float(row.get('Dr', '0').replace(',', ''))
+                    except (ValueError, TypeError):
+                        dr = 0.0
+                        
+                    try:
+                        cr = float(row.get('Cr', '0').replace(',', ''))
+                    except (ValueError, TypeError):
+                        cr = 0.0
+                        
+                    try:
+                        amt = float(row.get('Amt', '0').replace(',', ''))
+                    except (ValueError, TypeError):
+                        amt = 0.0
+                    
+                    transaction = {
+                        "transaction_id": row.get('transaction_id', ''),
+                        "document_number": row.get('Document_no', ''),
+                        "document_type": doc_type_mapping.get(doc_type, 'other_doc'),
+                        "bp_code": row.get('BP_code', ''),
+                        "bp_name": self.bp_accounts.get(row.get('BP_code', ''), {}).get('name', 'Unknown'),
+                        "legal_entity": self.bp_accounts.get(row.get('BP_code', ''), {}).get('legal_entity', 'unknown'),
+                        "posting_date": "2025-06-01",  # Default date
+                        "amount": amt
+                    }
+                    transactions.append(transaction)
+                    
+            logger.info(f"Successfully loaded {len(transactions)} transactions from CSV file")
+            return transactions
+            
+        except Exception as e:
+            logger.error(f"Error loading transactions from CSV: {e}")
+            return []
     
     def _generate_mock_transactions(self) -> List[Dict[str, Any]]:
         """
