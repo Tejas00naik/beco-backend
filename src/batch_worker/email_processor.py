@@ -125,8 +125,50 @@ class EmailProcessor:
                     # Log detailed attachment info before LLM processing
                     logger.info(f"Processing attachment {attachment_idx+1}/{len(attachments)}:")
                     logger.info(f"  Filename: {attachment_filename}")
-                    logger.info(f"  Content type: {attachment.get('content_type', 'unknown')}")
+                    content_type = attachment.get('content_type', 'unknown')
+                    logger.info(f"  Content type: {content_type}")
                     logger.info(f"  Size: {len(attachment.get('content', b''))} bytes")
+                    
+                    # Extract text content from PDF if needed
+                    if 'pdf' in content_type.lower() and 'text_content' not in attachment:
+                        try:
+                            import os
+                            import tempfile
+                            import PyPDF2
+                            
+                            logger.info(f"Extracting text from PDF attachment: {attachment_filename}")
+                            
+                            # Create a temporary file to save the PDF
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                                temp_file.write(attachment.get('content', b''))
+                                temp_pdf_path = temp_file.name
+                            
+                            # Extract text from PDF
+                            pdf_text = ""
+                            try:
+                                with open(temp_pdf_path, "rb") as pdf_file:
+                                    pdf_reader = PyPDF2.PdfReader(pdf_file)
+                                    for page_num in range(len(pdf_reader.pages)):
+                                        page = pdf_reader.pages[page_num]
+                                        pdf_text += page.extract_text() + "\n\n"
+                                
+                                logger.info(f"Extracted {len(pdf_text)} characters from PDF attachment")
+                                # Add extracted text to attachment data
+                                attachment['text_content'] = pdf_text
+                            except Exception as pdf_err:
+                                logger.error(f"Error extracting text from PDF: {str(pdf_err)}")
+                            finally:
+                                # Clean up the temporary file
+                                try:
+                                    os.unlink(temp_pdf_path)
+                                except:
+                                    pass
+                        except ImportError:
+                            logger.warning("PyPDF2 not installed. Installing now...")
+                            import subprocess
+                            import sys
+                            subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
+                            logger.warning("Failed to extract text from PDF attachment due to missing dependencies")
                     
                     # Call LLM for this specific attachment
                     llm_output = await self.llm_extractor.process_attachment_for_payment_advice(

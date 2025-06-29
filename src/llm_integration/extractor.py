@@ -353,6 +353,44 @@ class LLMExtractor:
             # Return empty dict on error
             return {}
             
+    def _extract_potential_payee_name(self, text_content: str) -> Optional[str]:
+        """
+        Extract a potential payee name from text content for group detection.
+        
+        Args:
+            text_content: Text content to extract payee name from
+            
+        Returns:
+            Potential payee name or None if not found
+        """
+        if not text_content:
+            return None
+            
+        # Simple extraction based on common patterns in payment advice documents
+        payee_patterns = [
+            r"(?:payee|paid to|payment to)[:\s]+([A-Za-z0-9\s&.,()'-]{3,50})",
+            r"(?:recipient|beneficiary)[:\s]+([A-Za-z0-9\s&.,()'-]{3,50})",
+            r"(?:remit(?:ted)? to)[:\s]+([A-Za-z0-9\s&.,()'-]{3,50})",
+            r"(?:KWICK LIVING|Amazon|Clicktech)"
+        ]
+        
+        for pattern in payee_patterns:
+            matches = re.findall(pattern, text_content, re.IGNORECASE)
+            if matches:
+                # Return the first match, cleaned up
+                payee_name = matches[0].strip()
+                # Remove any trailing punctuation
+                payee_name = re.sub(r'[.,;:\s]+$', '', payee_name)
+                return payee_name
+                
+        # Look for specific known payees
+        known_payees = ["KWICK LIVING", "Amazon", "Clicktech"]
+        for payee in known_payees:
+            if payee in text_content:
+                return payee
+                
+        return None
+        
     async def _detect_legal_entity(self, output: Dict[str, Any]) -> Dict[str, Any]:
         """
         Detect the legal entity and group from the extracted output.
