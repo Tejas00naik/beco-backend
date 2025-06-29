@@ -20,15 +20,16 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
     """
     processed_output = {}
     
-    # Meta table -> PaymentAdvice fields
+    # Meta table -> metaTable fields
     if "meta_table" in llm_output:
         meta = llm_output["meta_table"]
-        processed_output["settlement_date"] = meta.get("settlement_date")
-        processed_output["payment_advice_number"] = meta.get("payment_advice_number")
-        processed_output["payer_legal_name"] = meta.get("payer_legal_name")
-        processed_output["payee_legal_name"] = meta.get("payee_legal_name")
+        # Extract and add to processed output with correct camelCase keys
+        processed_output["paymentAdviceDate"] = meta.get("settlement_date")  # keep DD-MMM-YYYY format
+        processed_output["paymentAdviceNumber"] = meta.get("payment_advice_number")
+        processed_output["payersLegalName"] = meta.get("payer_legal_name")
+        processed_output["payeesLegalName"] = meta.get("payee_legal_name")
     
-    # Invoice table
+    # Invoice table -> invoiceTable
     if "invoice_table" in llm_output:
         invoiceTable = []
         for invoice in llm_output["invoice_table"]:
@@ -41,34 +42,48 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
             invoiceTable.append(invoice_entry)
         processed_output["invoiceTable"] = invoiceTable
     
-    # Settlement table
+    # settlement_table -> otherDocTable (1 row = 1 settlement document)
     if "settlement_table" in llm_output:
-        settlementTable = []
-        for settlement in llm_output["settlement_table"]:
-            settlement_entry = {
-                "settlementDocType": settlement.get("settlement_doc_type"),
-                "settlementDocNumber": settlement.get("settlement_doc_number"),
-                "settlementAmount": settlement.get("settlement_amount")
-            }
-            settlementTable.append(settlement_entry)
-        processed_output["settlementTable"] = settlementTable
-    
-    # Reconciliation table -> otherDocTable
-    if "reconciliation_statement" in llm_output:
         otherDocTable = []
-        for recon in llm_output["reconciliation_statement"]:
-            # Skip entries without invoice_number - they're not mappings
-            if not recon.get("invoice_number"):
-                continue
+        for settlement in llm_output["settlement_table"]:
+            doc_type = settlement.get("settlement_doc_type")
+            amount = settlement.get("settlement_amount")
+            
+            # Negate amount for cash-in credit doc types (BR, TDS, CN)
+            if amount is not None and doc_type in ["BR", "TDS", "CN"]:
+                amount = -abs(amount)  # Ensure it's negative for credits
                 
             other_doc_entry = {
-                "otherDocType": recon.get("settlement_doc_type"),
-                "otherDocNumber": recon.get("settlement_doc_number"),
-                "invoiceNumber": recon.get("invoice_number"),
-                "otherDocAmount": recon.get("settlement_amount")
+                "otherDocType": doc_type,
+                "otherDocNumber": settlement.get("settlement_doc_number"),
+                "otherDocAmount": amount
             }
             otherDocTable.append(other_doc_entry)
         processed_output["otherDocTable"] = otherDocTable
+    
+    # reconciliation_statement -> settlementTable (links between settlement doc and invoice)
+    if "reconciliation_statement" in llm_output:
+        settlementTable = []
+        for recon in llm_output["reconciliation_statement"]:
+            # Skip entries without invoice_number - they're not valid links
+            if not recon.get("invoice_number"):
+                continue
+                
+            doc_type = recon.get("settlement_doc_type")
+            amount = recon.get("settlement_amount")
+            
+            # Negate amount for cash-in credit doc types (BR, TDS, CN)
+            if amount is not None and doc_type in ["BR", "TDS", "CN"]:
+                amount = -abs(amount)  # Ensure it's negative for credits
+                
+            settlement_entry = {
+                # Doc type is not used in settlementTable as per mapping guide
+                "settlementDocNumber": recon.get("settlement_doc_number"),
+                "invoiceNumber": recon.get("invoice_number"),
+                "settlementAmount": amount
+            }
+            settlementTable.append(settlement_entry)
+        processed_output["settlementTable"] = settlementTable
     
     return processed_output
 
