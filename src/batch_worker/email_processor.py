@@ -129,7 +129,7 @@ class EmailProcessor:
                     logger.info(f"  Size: {len(attachment.get('content', b''))} bytes")
                     
                     # Call LLM for this specific attachment
-                    llm_output = self.llm_extractor.process_attachment_for_payment_advice(
+                    llm_output = await self.llm_extractor.process_attachment_for_payment_advice(
                         email_text_content, attachment
                     )
                     
