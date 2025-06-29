@@ -77,14 +77,19 @@ class BatchWorker:
             )
             logger.info(f"Using GmailReader with credentials from {gmail_credentials_path}")
         else:
-            # Use mock email reader
+            # Use mock email reader only if explicitly not using Gmail
+            logger.warning("Gmail adapter not requested or credentials not available")
+            logger.warning("Email processing will use mock data - this should only be used for testing")
             from src.mocks.email_reader import MockEmailReader
             self.email_reader = MockEmailReader()
-            logger.info("Using MockEmailReader")
+            logger.info("Using MockEmailReader for testing only")
         
-        # Initialize LLM extractor
-        from src.mocks.llm_extractor import MockLLMExtractor
-        self.llm_extractor = MockLLMExtractor()
+        # Initialize LLM extractor - always use real implementation
+        from src.llm_integration import LLMExtractor
+        if not os.environ.get("OPENAI_API_KEY"):
+            logger.error("OPENAI_API_KEY environment variable not set. LLM extraction will fail.")
+        self.llm_extractor = LLMExtractor(dao=self.dao)
+        logger.info("Using real LLMExtractor with OpenAI API (GPT-4-turbo)")
         
         # Initialize Legal Entity Lookup Service
         from src.services.legal_entity_lookup import LegalEntityLookupService
