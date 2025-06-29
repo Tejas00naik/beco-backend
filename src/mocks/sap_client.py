@@ -84,6 +84,7 @@ class MockSapClient:
             
         # Add special transactions with fixed IDs that match the MockLLMExtractor document numbers
         # Directly corresponds to the 5 payment advice variations in MockLLMExtractor
+        # Also includes Amazon post-processing special documents (INV-9999, TDS-CM-9999, BDPO-9999)
         special_transactions = [
             # First payment advice (file_hash == 0)
             {
@@ -293,6 +294,37 @@ class MockSapClient:
                 "legal_entity": "amazon-clicktech-retail-123456",
                 "posting_date": "2025-06-01",
                 "amount": 2950.00
+            },
+            # Amazon post-processing special documents
+            {
+                "transaction_id": "SAP-INV-10000099",
+                "document_number": "INV-9999",
+                "document_type": "invoice",
+                "bp_code": "BP005",
+                "bp_name": "Clicktech Retail Private Limited",
+                "legal_entity": "amazon-clicktech-retail-123456",
+                "posting_date": "2025-06-01",
+                "amount": 25000.00
+            },
+            {
+                "transaction_id": "SAP-DOC-10000099",
+                "document_number": "TDS-CM-9999",
+                "document_type": "other_doc",
+                "bp_code": "BP005",
+                "bp_name": "Clicktech Retail Private Limited",
+                "legal_entity": "amazon-clicktech-retail-123456",
+                "posting_date": "2025-06-01",
+                "amount": 2500.00
+            },
+            {
+                "transaction_id": "SAP-DOC-10000098",
+                "document_number": "BDPO-9999",
+                "document_type": "other_doc",
+                "bp_code": "BP005",
+                "bp_name": "Clicktech Retail Private Limited",
+                "legal_entity": "amazon-clicktech-retail-123456",
+                "posting_date": "2025-06-01",
+                "amount": 1250.00
             }
         ]
         

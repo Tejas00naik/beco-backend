@@ -8,7 +8,9 @@ credit notes, and settlement details.
 
 import logging
 import random
-from typing import Dict, List, Any, Optional, Tuple
+import copy
+from collections import defaultdict
+from typing import Dict, List, Any, Optional, Tuple, Callable
 from datetime import datetime, date, timedelta
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,20 @@ class MockLLMExtractor:
     def __init__(self):
         """Initialize the mock LLM extractor."""
         logger.info("Initialized MockLLMExtractor")
+        
+        # Group-specific prompt and post-processing mapping
+        self.group_processors = {
+            # Amazon group (default for this PoC)
+            'group-amazon-12345': {
+                'prompt': self._get_amazon_prompt,
+                'post_process': self._post_process_amazon_output
+            },
+            # Default fallback processor
+            'default': {
+                'prompt': self._get_default_prompt,
+                'post_process': lambda output: output  # No post-processing for default
+            }
+        }
     
     def extract_email_metadata(self, email_content: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -193,6 +209,28 @@ class MockLLMExtractor:
         filename = attachment_data.get('filename', 'unknown_file')
         logger.info(f"Processing attachment '{filename}' as payment advice")
         
+        # For demonstration, use a fixed group_uuid (in real implementation, get from legal entity lookup)
+        group_uuid = 'group-amazon-12345'
+        
+        # Select the appropriate prompt and post-processing based on group_uuid
+        group_processor = self.group_processors.get(group_uuid, self.group_processors['default'])
+        
+        # Generate the raw LLM output using the appropriate prompt
+        output = group_processor['prompt'](filename)
+        
+        # Apply group-specific post-processing
+        processed_output = group_processor['post_process'](output)
+        
+        # Log the results
+        logger.info(f"Generated payment advice data for attachment '{filename}' with "
+                  f"{len(processed_output['invoiceTable'])} invoices, "
+                  f"{len(processed_output['otherDocTable'])} other docs, and "
+                  f"{len(processed_output['settlementTable'])} settlements")
+        
+        return processed_output
+    
+    def _get_default_prompt(self, filename: str) -> Dict[str, Any]:
+        """Default prompt generation for any group."""
         # Use fixed date and payment advice numbers for complete determinism
         fixed_date = datetime(2025, 6, 1)
         date_str = "01-JUN-2025"
@@ -201,9 +239,7 @@ class MockLLMExtractor:
         file_hash = hash(filename) % 5
         advice_number = f"PA-{100000 + file_hash}"
         
-        # Create a mock LLM output in the standardized format with fixed document numbers that match SAP mock data
-        # Use a single fixed set of document numbers for all runs - these match SAP mock client data
-        # Always use the first payment advice set for absolute consistency
+        # Default mock data with fixed document numbers that match SAP mock data
         invoice_numbers = ["INV-1234", "INV-5678"]
         other_doc_numbers = ["BDPO-12345", "TDS-CM-1234"]
         
@@ -215,7 +251,7 @@ class MockLLMExtractor:
         tds_amount = round(invoice_amount2 * 0.10, 2)  # 4200.00
         bdpo_amount = round(invoice_amount1 * 0.10, 2)  # 3500.00
         
-        output = {
+        return {
             "metaTable": {
                 "paymentAdviceDate": date_str,
                 "paymentAdviceNumber": advice_number,
@@ -261,8 +297,85 @@ class MockLLMExtractor:
                 }
             ]
         }
+    
+    def _get_amazon_prompt(self, filename: str) -> Dict[str, Any]:
+        """Amazon-specific prompt generation."""
+        # For now, we'll use the same base data as default but with some modifications
+        # In a real implementation, this would contain Amazon-specific prompt templates
+        base_output = self._get_default_prompt(filename)
         
-        logger.info(f"Generated payment advice data for attachment '{filename}' with {len(output['invoiceTable'])} invoices, "
-                   f"{len(output['otherDocTable'])} other docs, and {len(output['settlementTable'])} settlements")
+        # Intentionally create a scenario where an invoice is missing from invoiceTable but present in settlementTable
+        # This tests our post-processing logic
+        missing_invoice_number = "INV-9999"  # A missing invoice that will be in settlements
+        missing_invoice_amount = 25000.00
         
-        return output
+        # Add a settlement referencing the missing invoice
+        base_output["settlementTable"].append({
+            "settlementDocNumber": "TDS-CM-9999",
+            "invoiceNumber": missing_invoice_number,
+            "settlementAmount": -2500.00  # 10% TDS
+        })
+        
+        # Add another settlement for the same missing invoice to test summing logic
+        base_output["settlementTable"].append({
+            "settlementDocNumber": "BDPO-9999",
+            "invoiceNumber": missing_invoice_number,
+            "settlementAmount": -1250.00  # 5% BDPO
+        })
+        
+        # Add the other docs for these settlements
+        base_output["otherDocTable"].append({
+            "otherDocType": "TDS",
+            "otherDocNumber": "TDS-CM-9999",
+            "otherDocAmount": -2500.00
+        })
+        
+        base_output["otherDocTable"].append({
+            "otherDocType": "BDPO",
+            "otherDocNumber": "BDPO-9999",
+            "otherDocAmount": -1250.00
+        })
+        
+        return base_output
+    
+    def _post_process_amazon_output(self, output: Dict[str, Any]) -> Dict[str, Any]:
+        """Amazon-specific post-processing logic.
+        
+        For Amazon group, we need to:
+        1. Check if any invoice numbers in settlementTable are missing from invoiceTable
+        2. Add those missing invoices to invoiceTable
+        3. If a missing invoice appears multiple times, sum the amounts
+        """
+        logger.info("Applying Amazon-specific post-processing")
+        
+        # Create a deep copy to avoid modifying the original
+        processed_output = copy.deepcopy(output)
+        
+        # Build a set of invoice numbers already in the invoiceTable
+        existing_invoice_numbers = set(invoice["invoiceNumber"] for invoice in processed_output.get("invoiceTable", []))
+        
+        # Collect missing invoice numbers and their settlement amounts
+        missing_invoices = defaultdict(list)
+        for settlement in processed_output.get("settlementTable", []):
+            invoice_number = settlement.get("invoiceNumber")
+            if invoice_number and invoice_number not in existing_invoice_numbers:
+                missing_invoices[invoice_number].append(settlement)
+        
+        # If there are missing invoices, add them to the invoiceTable
+        for invoice_number, settlements in missing_invoices.items():
+            # Calculate the total settlement amount (absolute value of the sum of settlement amounts)
+            total_amount = sum(abs(float(s.get("settlementAmount", 0))) for s in settlements)
+            
+            # Create a new invoice entry
+            invoice_entry = {
+                "invoiceNumber": invoice_number,
+                "invoiceDate": None,
+                "bookingAmount": None,
+                "totalSettlementAmount": total_amount
+            }
+            
+            # Add to the invoiceTable
+            processed_output["invoiceTable"].append(invoice_entry)
+            logger.info(f"Added missing invoice {invoice_number} to invoiceTable with amount {total_amount}")
+        
+        return processed_output
