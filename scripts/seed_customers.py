@@ -68,6 +68,26 @@ CUSTOMER_DATA = [
         "payment_term_in_days": 30,
         "is_active": True,
         "legal_entity_uuid": "amazon-clicktech-retail-123456"
+    },
+    {
+        "customer_uuid": "amazon-clicktech-customer-amzcl1",
+        "customer_name": "Amazon Clicktech Services Private Limited",
+        "sap_customer_id": "AMZCL1",
+        "sap_customer_name": "Amazon Clicktech Services Private Limited",
+        "state": "Maharashtra",
+        "payment_term_in_days": 30,
+        "is_active": True,
+        "legal_entity_uuid": "amazon-clicktech-retail-123456"
+    },
+    {
+        "customer_uuid": "amazon-clicktech-customer-amzcl2",
+        "customer_name": "Amazon Clicktech Services Private Limited",
+        "sap_customer_id": "AMZCL2",
+        "sap_customer_name": "Amazon Clicktech Services Private Limited",
+        "state": "Maharashtra",
+        "payment_term_in_days": 30,
+        "is_active": True,
+        "legal_entity_uuid": "amazon-clicktech-retail-123456"
     }
 ]
 
