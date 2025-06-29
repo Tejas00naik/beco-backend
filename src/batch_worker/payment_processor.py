@@ -53,7 +53,9 @@ class PaymentProcessor:
             
             # Extract payer and payee names from LLM output
             payer_name = meta_table.get('payersLegalName')
-            payee_name = meta_table.get('payeesLegalName') 
+            payee_name = meta_table.get('payeesLegalName')
+            
+            logger.info(f"Extracted payer name from LLM: '{payer_name}'")  # Log the payer name we got from LLM
             
             # Extract other payment advice fields
             payment_advice_number = meta_table.get('paymentAdviceNumber')
@@ -64,34 +66,57 @@ class PaymentProcessor:
             legal_entity_uuid = None
             group_uuid = None
             if payer_name:
+                logger.info(f"[GROUP_UUID_DEBUG] Attempting to lookup legal entity for payer: '{payer_name}'")
                 try:
                     legal_entity_uuid = await self.legal_entity_lookup.lookup_legal_entity_uuid(payer_name)
-                    logger.info(f"Looked up legal entity UUID for payer '{payer_name}': {legal_entity_uuid}")
+                    logger.info(f"[GROUP_UUID_DEBUG] Looked up legal entity UUID for payer '{payer_name}': {legal_entity_uuid}")
+                    if not legal_entity_uuid:
+                        logger.warning(f"[GROUP_UUID_DEBUG] Legal entity lookup returned None for payer '{payer_name}'")
                 except ValueError as e:
-                    logger.warning(f"Legal entity lookup error: {str(e)}")
+                    logger.warning(f"[GROUP_UUID_DEBUG] Legal entity lookup error for '{payer_name}': {str(e)}")
                     # Continue with null legal_entity_uuid
+            else:
+                logger.warning("[GROUP_UUID_DEBUG] No payer name found in LLM output, skipping legal entity lookup")
+            
+            # If we found a legal entity, fetch its group_uuid
+            if legal_entity_uuid:
+                logger.info(f"[GROUP_UUID_DEBUG] Found legal_entity_uuid '{legal_entity_uuid}', looking up group_uuid")
+                legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
                 
-                # If we found a legal entity, fetch its group_uuid
-                if legal_entity_uuid:
-                    legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
-                    if legal_entity and "group_uuid" in legal_entity and legal_entity["group_uuid"]:
-                        group_uuid = legal_entity["group_uuid"]
-                        logger.info(f"Found group_uuid '{group_uuid}' for legal entity '{legal_entity_uuid}'")
-                        
-                        # Update EmailLog.group_uuids array - upsert group_uuid if not already present
+                if not legal_entity:
+                    logger.warning(f"[GROUP_UUID_DEBUG] Failed to retrieve legal entity with UUID '{legal_entity_uuid}' from Firestore")
+                elif "group_uuid" not in legal_entity or not legal_entity["group_uuid"]:
+                    logger.warning(f"[GROUP_UUID_DEBUG] Legal entity '{legal_entity_uuid}' exists but has no group_uuid")
+                else:
+                    group_uuid = legal_entity["group_uuid"]
+                    logger.info(f"[GROUP_UUID_DEBUG] Found group_uuid '{group_uuid}' for legal entity '{legal_entity_uuid}'")
+                    
+                    # Update EmailLog.group_uuids array - upsert group_uuid if not already present
+                    try:
+                        logger.info(f"[GROUP_UUID_DEBUG] Fetching email_log {email_log_uuid} to update group_uuids")
                         email_log = await self.dao.get_document("email_log", email_log_uuid)
                         if email_log:
                             # Initialize group_uuids as empty list if it doesn't exist
                             group_uuids = email_log.get("group_uuids", [])
                             
+                            # Log current state
+                            logger.info(f"[GROUP_UUID_DEBUG] Current group_uuids for email_log {email_log_uuid}: {group_uuids}")
+                            
                             # Only add if not already in the list
                             if group_uuid not in group_uuids:
                                 group_uuids.append(group_uuid)
+                                logger.info(f"[GROUP_UUID_DEBUG] About to update email_log with new group_uuids: {group_uuids}")
                                 await self.dao.update_document("email_log", email_log_uuid, {
                                     "group_uuids": group_uuids,
                                     "updated_at": datetime.utcnow()
                                 })
-                                logger.info(f"Updated email_log {email_log_uuid} with group_uuid {group_uuid}")
+                                logger.info(f"[GROUP_UUID_DEBUG] Updated email_log {email_log_uuid} with group_uuid {group_uuid}")
+                            else:
+                                logger.info(f"[GROUP_UUID_DEBUG] Group UUID {group_uuid} already in email_log group_uuids, no update needed")
+                        else:
+                            logger.warning(f"[GROUP_UUID_DEBUG] Could not find email_log with UUID {email_log_uuid} to update group_uuid")
+                    except Exception as e:
+                        logger.error(f"[GROUP_UUID_DEBUG] Failed to update email_log with group_uuid: {str(e)}")
             
             # Create PaymentAdvice object
             payment_advice = PaymentAdvice(

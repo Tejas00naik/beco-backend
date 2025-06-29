@@ -47,7 +47,8 @@ class EmailProcessor:
         try:
             # Extract email metadata
             email_id = email_data.get("email_id", str(uuid.uuid4()))
-            sender = email_data.get("sender")
+            sender = email_data.get("sender_mail")  # Fix: Use sender_mail instead of sender
+            original_sender = email_data.get("original_sender_mail")  # Fix: Get original_sender_mail
             subject = email_data.get("subject", "(No Subject)")
             received_at = email_data.get("received_at", datetime.utcnow())
             
@@ -75,7 +76,7 @@ class EmailProcessor:
             email_log = EmailLog(
                 email_log_uuid=email_id,
                 sender_mail=sender,
-                original_sender_mail=email_data.get("original_sender"),
+                original_sender_mail=original_sender,  # Fix: Use the extracted original_sender
                 email_subject=subject,
                 mailbox_id=email_data.get("mailbox_id"),
                 received_at=received_at,

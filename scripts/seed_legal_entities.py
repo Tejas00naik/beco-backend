@@ -37,8 +37,9 @@ SAMPLE_LEGAL_ENTITIES = [
     {"legal_entity_uuid": "wayne-ent-legal-entity-13579", "legal_entity_name": "Wayne Enterprises", "group_uuid": "group-conglomerate-24680"},
     {"legal_entity_uuid": "umbrella-corp-legal-entity-98765", "legal_entity_name": "Umbrella Corporation", "group_uuid": "group-misc-13579"},
     {"legal_entity_uuid": "beco-trading-85412", "legal_entity_name": "Beco Trading Ltd", "group_uuid": "group-misc-13579"},
-    # Amazon's legal entities for testing direct lookup - both in the same group
+    # Amazon's legal entities for testing direct lookup - all in the same group
     {"legal_entity_uuid": "amazon-clicktech-retail-123456", "legal_entity_name": "Clicktech Retail Private Limited", "group_uuid": "group-amazon-12345"},
+    {"legal_entity_uuid": "amazon-clicktech-services-456789", "legal_entity_name": "Amazon Clicktech Services Private Limited", "group_uuid": "group-amazon-12345"},
     {"legal_entity_uuid": "amazon-seller-services-789012", "legal_entity_name": "Amazon Seller Services", "group_uuid": "group-amazon-12345"}
 ]
 

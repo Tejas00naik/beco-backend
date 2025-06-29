@@ -190,8 +190,6 @@ class BatchWorker:
                             logger.info(f"Incremental mode: using timestamp from previous batch run: {since_timestamp}")
                     
                     # Check for INITIAL_FETCH_START_DATE regardless of previous batch run
-                    # This allows overriding the date even when a previous batch exists
-                    import os
                     initial_date_str = os.environ.get("INITIAL_FETCH_START_DATE", None)
                     if initial_date_str:
                         try:
