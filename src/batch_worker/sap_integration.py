@@ -167,6 +167,9 @@ class SapIntegrator:
                     logger.debug(f"Invoice {invoice.invoice_uuid} already has SAP transaction ID {invoice.sap_transaction_id}")
                     continue
                     
+                # Log invoice lookup attempt
+                logger.info(f"Looking up SAP transaction for invoice number: {invoice.invoice_number} (invoice_uuid: {invoice.invoice_uuid})")
+                
                 # Search SAP for this invoice number
                 sap_results = await self.sap_client.search_transactions(
                     doc_number=invoice.invoice_number,
@@ -185,6 +188,11 @@ class SapIntegrator:
                 sap_transaction_id = sap_transaction["transaction_id"]
                 bp_code = sap_transaction["bp_code"]
                 
+                # Log transaction details found in SAP
+                logger.info(f"Found SAP transaction for invoice {invoice.invoice_number}:")
+                logger.info(f"  transaction_id: {sap_transaction_id}")
+                logger.info(f"  bp_code: {bp_code}")
+                
                 # Get customer UUID from customer table based on SAP BP code
                 customer_docs = await self.dao.query_documents(
                     "customer", 
@@ -195,17 +203,21 @@ class SapIntegrator:
                 if customer_docs and len(customer_docs) > 0:
                     customer_uuid = customer_docs[0]["customer_uuid"]
                     
+                # Save previous values for logging changes
+                prev_transaction_id = invoice.sap_transaction_id
+                prev_customer_uuid = invoice.customer_uuid
+                
                 # Update invoice with SAP transaction ID and customer UUID
                 update_data = {
                     "sap_transaction_id": sap_transaction_id,
+                    "customer_uuid": customer_uuid,
                     "updated_at": datetime.utcnow()
                 }
                 
-                if customer_uuid:
-                    update_data["customer_uuid"] = customer_uuid
-                    
                 await self.dao.update_document("invoice", invoice.invoice_uuid, update_data)
                 logger.info(f"Updated invoice {invoice.invoice_uuid} with SAP transaction ID {sap_transaction_id} and customer {customer_uuid}")
+                logger.info(f"  sap_transaction_id: {prev_transaction_id or 'None'} -> {sap_transaction_id}")
+                logger.info(f"  customer_uuid: {prev_customer_uuid or 'None'} -> {customer_uuid}")
                 successful_updates += 1
             
             # Process other docs
@@ -217,6 +229,9 @@ class SapIntegrator:
                     logger.debug(f"Other doc {other_doc.other_doc_uuid} already has SAP transaction ID {other_doc.sap_transaction_id}")
                     continue
                     
+                # Log other_doc lookup attempt
+                logger.info(f"Looking up SAP transaction for other_doc number: {other_doc.other_doc_number} (other_doc_uuid: {other_doc.other_doc_uuid})")
+                
                 # Search SAP for this other doc number
                 sap_results = await self.sap_client.search_transactions(
                     doc_number=other_doc.other_doc_number,

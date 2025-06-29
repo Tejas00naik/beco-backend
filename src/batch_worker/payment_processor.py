@@ -109,7 +109,10 @@ class PaymentProcessor:
             # Add PaymentAdvice to Firestore
             await self.dao.add_document("payment_advice", payment_advice_uuid, payment_advice.__dict__)
             
+            # Enhanced logging for payment advice creation
             logger.info(f"Created payment advice {payment_advice_uuid} for email {email_log_uuid}")
+            logger.info(f"Payment advice details: number={payment_advice_number}, date={payment_advice_date}, amount={payment_advice_amount}")
+            logger.info(f"Payment advice parties: payer={payer_name}, payee={payee_name}, legal_entity={legal_entity_uuid}")
             
             # Process invoices from LLM output
             invoice_table = llm_output.get('invoiceTable', [])
@@ -166,6 +169,7 @@ class PaymentProcessor:
                         # Add Invoice to Firestore
                         await self.dao.add_document("invoice", invoice_uuid, invoice.__dict__)
                         logger.info(f"Created invoice {invoice_uuid} with number {invoice_number} for payment advice {payment_advice_uuid}")
+                        logger.info(f"Invoice details: date={invoice_date}, booking_amount={booking_amount}, total_settlement_amount={total_settlement_amount}, status={invoice.invoice_status}")
                 else:
                     # Create new Invoice object
                     invoice_uuid = str(uuid.uuid4())
@@ -183,6 +187,7 @@ class PaymentProcessor:
                     # Add Invoice to Firestore
                     await self.dao.add_document("invoice", invoice_uuid, invoice.__dict__)
                     logger.info(f"Created invoice {invoice_uuid} with number {invoice_number}")
+                    logger.info(f"Invoice details: date={invoice_date}, booking_amount={booking_amount}, total_settlement_amount={total_settlement_amount}, status={invoice.invoice_status}")
             
             # Process other docs from LLM output
             other_doc_table = llm_output.get('otherDocTable', [])
@@ -239,6 +244,7 @@ class PaymentProcessor:
                         # Add Other Doc to Firestore
                         await self.dao.add_document("other_doc", other_doc_uuid, other_doc.__dict__)
                         logger.info(f"Created other doc {other_doc_uuid} with number {other_doc_number}")
+                        logger.info(f"Other doc details: type={other_doc.other_doc_type}, date={other_doc_date}, amount={other_doc_amount}")
                         other_doc_uuids[other_doc_number] = other_doc_uuid
                         continue
                 
@@ -270,6 +276,7 @@ class PaymentProcessor:
                 # Add OtherDoc to Firestore
                 await self.dao.add_document("other_doc", other_doc_uuid, other_doc.__dict__)
                 logger.info(f"Created other doc {other_doc_uuid} with number {other_doc_number}")
+                logger.info(f"Other doc details: type={other_doc_type}, date={other_doc_date}, amount={other_doc_amount}")
                 
                 # Store mapping for settlement linking
                 other_doc_uuids[other_doc_number] = other_doc_uuid
@@ -370,6 +377,8 @@ class PaymentProcessor:
                     # Add Settlement to Firestore
                     await self.dao.add_document("settlement", settlement_uuid, settlement.__dict__)
                     logger.info(f"Created settlement {settlement_uuid} linked to invoice {invoice_number} and other doc {settlement_doc_number}")
+                    logger.info(f"Settlement details: date={settlement.settlement_date}, amount={settlement_amount}, status={settlement.settlement_status}")
+                    logger.info(f"Settlement links: invoice_uuid={invoice_uuid}, other_doc_uuid={other_doc_uuid}")
                     settlements_created += 1
                     
                 except ValueError as e:

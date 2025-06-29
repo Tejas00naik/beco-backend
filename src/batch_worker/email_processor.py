@@ -86,7 +86,16 @@ class EmailProcessor:
             # Add EmailLog to Firestore
             await self.dao.add_document("email_log", email_log.email_log_uuid, email_log.__dict__)
             
-            logger.info(f"Created email_log {email_log.email_log_uuid} in Firestore")
+            # Detailed logging of created EmailLog fields
+            logger.info(f"Created email_log with the following details:")
+            logger.info(f"  email_log_uuid: {email_log.email_log_uuid}")
+            logger.info(f"  sender_mail: {email_log.sender_mail}")
+            logger.info(f"  original_sender_mail: {email_log.original_sender_mail}")
+            logger.info(f"  email_subject: {email_log.email_subject}")
+            logger.info(f"  mailbox_id: {email_log.mailbox_id}")
+            logger.info(f"  received_at: {email_log.received_at}")
+            logger.info(f"  gcs_folder_uri: {email_log.gcs_folder_uri}")
+            logger.info(f"  group_uuids: {email_log.group_uuids} (will be populated later)")
             
             # Create a processing log
             processing_log = EmailProcessingLog(
@@ -112,17 +121,51 @@ class EmailProcessor:
                     attachment_filename = attachment.get('filename', f'attachment-{attachment_idx}')
                     logger.info(f"Processing attachment {attachment_idx+1}/{len(attachments)}: {attachment_filename}")
                     
+                    # Log detailed attachment info before LLM processing
+                    logger.info(f"Processing attachment {attachment_idx+1}/{len(attachments)}:")
+                    logger.info(f"  Filename: {attachment_filename}")
+                    logger.info(f"  Content type: {attachment.get('content_type', 'unknown')}")
+                    logger.info(f"  Size: {len(attachment.get('content', b''))} bytes")
+                    
                     # Call LLM for this specific attachment
                     llm_output = self.llm_extractor.process_attachment_for_payment_advice(
                         email_text_content, attachment
                     )
                     
-                    # Print summary of extracted data
+                    # Print detailed summary of extracted data
                     logger.info(f"LLM extracted data for attachment {attachment_filename}:")
-                    logger.info(f"  Meta Table: Payment advice number {llm_output.get('metaTable', {}).get('paymentAdviceNumber')}")
-                    logger.info(f"  Invoice Table: {len(llm_output.get('invoiceTable', []))} items")
-                    logger.info(f"  Other Doc Table: {len(llm_output.get('otherDocTable', []))} items")
-                    logger.info(f"  Settlement Table: {len(llm_output.get('settlementTable', []))} items")
+                    # Meta Table detailed logging
+                    meta_table = llm_output.get('metaTable', {})
+                    logger.info(f"  Meta Table:")
+                    logger.info(f"    paymentAdviceNumber: {meta_table.get('paymentAdviceNumber')}")
+                    logger.info(f"    paymentAdviceDate: {meta_table.get('paymentAdviceDate')}")
+                    logger.info(f"    paymentAdviceAmount: {meta_table.get('paymentAdviceAmount')}")
+                    logger.info(f"    payersLegalName: {meta_table.get('payersLegalName')}")
+                    logger.info(f"    payeesLegalName: {meta_table.get('payeesLegalName')}")
+                    
+                    # Invoice Table summary
+                    invoice_table = llm_output.get('invoiceTable', [])
+                    logger.info(f"  Invoice Table: {len(invoice_table)} items")
+                    for i, invoice in enumerate(invoice_table[:3]):  # Log first 3 invoices
+                        logger.info(f"    Invoice {i+1}: {invoice.get('invoiceNumber')} - Amount: {invoice.get('totalSettlementAmount')}")
+                    if len(invoice_table) > 3:
+                        logger.info(f"    ... and {len(invoice_table) - 3} more invoices")
+                    
+                    # Other Doc Table summary
+                    other_doc_table = llm_output.get('otherDocTable', [])
+                    logger.info(f"  Other Doc Table: {len(other_doc_table)} items")
+                    for i, doc in enumerate(other_doc_table[:3]):  # Log first 3 other docs
+                        logger.info(f"    Other Doc {i+1}: {doc.get('otherDocNumber')} ({doc.get('otherDocType')}) - Amount: {doc.get('otherDocAmount')}")
+                    if len(other_doc_table) > 3:
+                        logger.info(f"    ... and {len(other_doc_table) - 3} more other docs")
+                    
+                    # Settlement Table summary
+                    settlement_table = llm_output.get('settlementTable', [])
+                    logger.info(f"  Settlement Table: {len(settlement_table)} items")
+                    for i, settlement in enumerate(settlement_table[:3]):  # Log first 3 settlements
+                        logger.info(f"    Settlement {i+1}: {settlement.get('invoiceNumber')} -> {settlement.get('settlementDocNumber')} - Amount: {settlement.get('settlementAmount')}")
+                    if len(settlement_table) > 3:
+                        logger.info(f"    ... and {len(settlement_table) - 3} more settlements")
                     
                     # Process payment advice data and create records in Firestore
                     payment_advice_uuid = await payment_processor.create_payment_advice_from_llm_output(llm_output, email_log.email_log_uuid)

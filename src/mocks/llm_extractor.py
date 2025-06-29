@@ -208,9 +208,13 @@ class MockLLMExtractor:
         # Log the processing
         filename = attachment_data.get('filename', 'unknown_file')
         logger.info(f"Processing attachment '{filename}' as payment advice")
+        logger.info(f"LLM Extraction: Email content length: {len(email_text_content)} chars")
+        logger.info(f"LLM Extraction: Attachment type: {attachment_data.get('content_type', 'unknown')}")
+        logger.info(f"LLM Extraction: Attachment size: {len(attachment_data.get('content', b''))} bytes")
         
         # For demonstration, use a fixed group_uuid (in real implementation, get from legal entity lookup)
         group_uuid = 'group-amazon-12345'
+        logger.info(f"LLM Extraction: Using group_uuid: {group_uuid} for processing")
         
         # Select the appropriate prompt and post-processing based on group_uuid
         group_processor = self.group_processors.get(group_uuid, self.group_processors['default'])
@@ -221,7 +225,36 @@ class MockLLMExtractor:
         # Apply group-specific post-processing
         processed_output = group_processor['post_process'](output)
         
-        # Log the results
+        # Log the results in detail
+        meta_table = processed_output.get('metaTable', {})
+        logger.info(f"LLM Extraction results - Meta Table:")
+        logger.info(f"  paymentAdviceNumber: {meta_table.get('paymentAdviceNumber')}")
+        logger.info(f"  paymentAdviceDate: {meta_table.get('paymentAdviceDate')}")
+        logger.info(f"  paymentAdviceAmount: {meta_table.get('paymentAdviceAmount')}")
+        logger.info(f"  payersLegalName: {meta_table.get('payersLegalName')}")
+        logger.info(f"  payeesLegalName: {meta_table.get('payeesLegalName')}")
+        
+        invoice_table = processed_output.get('invoiceTable', [])
+        logger.info(f"LLM Extraction results - Invoice Table: {len(invoice_table)} items")
+        for i, invoice in enumerate(invoice_table[:3]):  # Log first 3 invoices
+            logger.info(f"  Invoice {i+1}: {invoice.get('invoiceNumber')} - Amount: {invoice.get('totalSettlementAmount')}")
+        if len(invoice_table) > 3:
+            logger.info(f"  ... and {len(invoice_table) - 3} more invoices")
+        
+        other_doc_table = processed_output.get('otherDocTable', [])
+        logger.info(f"LLM Extraction results - Other Doc Table: {len(other_doc_table)} items")
+        for i, doc in enumerate(other_doc_table[:3]):  # Log first 3 other docs
+            logger.info(f"  Other Doc {i+1}: {doc.get('otherDocNumber')} ({doc.get('otherDocType')}) - Amount: {doc.get('otherDocAmount')}")
+        if len(other_doc_table) > 3:
+            logger.info(f"  ... and {len(other_doc_table) - 3} more other docs")
+        
+        settlement_table = processed_output.get('settlementTable', [])
+        logger.info(f"LLM Extraction results - Settlement Table: {len(settlement_table)} items")
+        for i, settlement in enumerate(settlement_table[:3]):  # Log first 3 settlements
+            logger.info(f"  Settlement {i+1}: {settlement.get('invoiceNumber')} -> {settlement.get('settlementDocNumber')} - Amount: {settlement.get('settlementAmount')}")
+        if len(settlement_table) > 3:
+            logger.info(f"  ... and {len(settlement_table) - 3} more settlements")
+            
         logger.info(f"Generated payment advice data for attachment '{filename}' with "
                   f"{len(processed_output['invoiceTable'])} invoices, "
                   f"{len(processed_output['otherDocTable'])} other docs, and "
@@ -239,23 +272,23 @@ class MockLLMExtractor:
         file_hash = hash(filename) % 5
         advice_number = f"PA-{100000 + file_hash}"
         
-        # Default mock data with fixed document numbers that match SAP mock data
-        invoice_numbers = ["INV-1234", "INV-5678"]
-        other_doc_numbers = ["BDPO-12345", "TDS-CM-1234"]
+        # Default mock data with fixed document numbers from CSV-based SAP mock data
+        invoice_numbers = ["B2B2526/1112344", "B2B2526/1112417"]
+        other_doc_numbers = ["337027143", "TDS-CM-4208"]
         
-        # Fixed amounts for complete determinism
-        invoice_amount1 = 35000.00
-        invoice_amount2 = 42000.00
+        # Fixed amounts from CSV mock data
+        invoice_amount1 = 762928.0  # B2B2526/1112344 amount
+        invoice_amount2 = 742084.0  # B2B2526/1112417 amount
             
-        # Fixed TDS and BDPO amounts (10% of invoice amounts)
-        tds_amount = round(invoice_amount2 * 0.10, 2)  # 4200.00
-        bdpo_amount = round(invoice_amount1 * 0.10, 2)  # 3500.00
+        # Fixed TDS and BR amounts
+        br_amount = 3547260.0  # 337027143 amount
+        tds_amount = 4.0  # TDS-CM-4208 amount
         
         return {
             "metaTable": {
                 "paymentAdviceDate": date_str,
                 "paymentAdviceNumber": advice_number,
-                "payersLegalName": "Clicktech Retail Private Limited",
+                "payersLegalName": "Amazon Clicktech Services Private Limited",
                 "payeesLegalName": "Beco Trading Ltd"
             },
             "invoiceTable": [
@@ -274,9 +307,9 @@ class MockLLMExtractor:
             ],
             "otherDocTable": [
                 {
-                    "otherDocType": "BDPO",
+                    "otherDocType": "BR",
                     "otherDocNumber": other_doc_numbers[0],
-                    "otherDocAmount": -bdpo_amount
+                    "otherDocAmount": -br_amount
                 },
                 {
                     "otherDocType": "TDS",
@@ -288,7 +321,7 @@ class MockLLMExtractor:
                 {
                     "settlementDocNumber": other_doc_numbers[0],
                     "invoiceNumber": invoice_numbers[0],
-                    "settlementAmount": -bdpo_amount
+                    "settlementAmount": -br_amount
                 },
                 {
                     "settlementDocNumber": other_doc_numbers[1],
@@ -306,34 +339,35 @@ class MockLLMExtractor:
         
         # Intentionally create a scenario where an invoice is missing from invoiceTable but present in settlementTable
         # This tests our post-processing logic
-        missing_invoice_number = "INV-9999"  # A missing invoice that will be in settlements
-        missing_invoice_amount = 25000.00
+        # Using CSV SAP mock data document numbers
+        missing_invoice_number = "B2B2526/1112484"  # A missing invoice that will be in settlements
+        missing_invoice_amount = 953938.0
         
         # Add a settlement referencing the missing invoice
         base_output["settlementTable"].append({
-            "settlementDocNumber": "TDS-CM-9999",
+            "settlementDocNumber": "TDS-CM-9522",
             "invoiceNumber": missing_invoice_number,
-            "settlementAmount": -2500.00  # 10% TDS
+            "settlementAmount": -61.0  # TDS amount from CSV
         })
         
         # Add another settlement for the same missing invoice to test summing logic
         base_output["settlementTable"].append({
-            "settlementDocNumber": "BDPO-9999",
+            "settlementDocNumber": "TDS-CM-1539",
             "invoiceNumber": missing_invoice_number,
-            "settlementAmount": -1250.00  # 5% BDPO
+            "settlementAmount": -982.0  # TDS amount from CSV
         })
         
         # Add the other docs for these settlements
         base_output["otherDocTable"].append({
             "otherDocType": "TDS",
-            "otherDocNumber": "TDS-CM-9999",
-            "otherDocAmount": -2500.00
+            "otherDocNumber": "TDS-CM-9522",
+            "otherDocAmount": -61.0
         })
         
         base_output["otherDocTable"].append({
-            "otherDocType": "BDPO",
-            "otherDocNumber": "BDPO-9999",
-            "otherDocAmount": -1250.00
+            "otherDocType": "TDS",
+            "otherDocNumber": "TDS-CM-1539",
+            "otherDocAmount": -982.0
         })
         
         return base_output
@@ -351,8 +385,14 @@ class MockLLMExtractor:
         # Create a deep copy to avoid modifying the original
         processed_output = copy.deepcopy(output)
         
+        # Log before post-processing counts
+        invoice_count = len(processed_output.get("invoiceTable", []))
+        settlement_count = len(processed_output.get("settlementTable", []))
+        logger.info(f"Amazon post-processing: Before - {invoice_count} invoices, {settlement_count} settlements")
+        
         # Build a set of invoice numbers already in the invoiceTable
         existing_invoice_numbers = set(invoice["invoiceNumber"] for invoice in processed_output.get("invoiceTable", []))
+        logger.info(f"Amazon post-processing: Existing invoice numbers: {existing_invoice_numbers}")
         
         # Collect missing invoice numbers and their settlement amounts
         missing_invoices = defaultdict(list)
@@ -361,10 +401,20 @@ class MockLLMExtractor:
             if invoice_number and invoice_number not in existing_invoice_numbers:
                 missing_invoices[invoice_number].append(settlement)
         
+        if missing_invoices:
+            logger.info(f"Amazon post-processing: Found {len(missing_invoices)} missing invoice numbers in settlements: {list(missing_invoices.keys())}")
+        else:
+            logger.info("Amazon post-processing: No missing invoices found")
+        
         # If there are missing invoices, add them to the invoiceTable
         for invoice_number, settlements in missing_invoices.items():
             # Calculate the total settlement amount (absolute value of the sum of settlement amounts)
-            total_amount = sum(abs(float(s.get("settlementAmount", 0))) for s in settlements)
+            settlement_amounts = [s.get("settlementAmount", 0) for s in settlements]
+            total_amount = sum(abs(float(amount)) for amount in settlement_amounts)
+            
+            logger.info(f"Amazon post-processing: For missing invoice {invoice_number}:")
+            logger.info(f"  Found {len(settlements)} matching settlements with amounts: {settlement_amounts}")
+            logger.info(f"  Total calculated settlement amount: {total_amount}")
             
             # Create a new invoice entry
             invoice_entry = {
@@ -376,6 +426,11 @@ class MockLLMExtractor:
             
             # Add to the invoiceTable
             processed_output["invoiceTable"].append(invoice_entry)
-            logger.info(f"Added missing invoice {invoice_number} to invoiceTable with amount {total_amount}")
+            logger.info(f"Amazon post-processing: Added missing invoice {invoice_number} to invoiceTable with amount {total_amount}")
+        
+        # Log after post-processing counts
+        invoice_count_after = len(processed_output.get("invoiceTable", []))
+        logger.info(f"Amazon post-processing: After - {invoice_count_after} invoices, {settlement_count} settlements")
+        logger.info(f"Amazon post-processing: Added {invoice_count_after - invoice_count} new invoice records")
         
         return processed_output

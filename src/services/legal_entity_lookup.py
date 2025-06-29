@@ -173,11 +173,38 @@ class LegalEntityLookupService:
         meta_table = llm_output.get("metaTable", {})
         payer_name = meta_table.get("payersLegalName")
         
-        if not payer_name:
-            raise ValueError("No payer legal name found in LLM output")
+        logger.info(f"Group detection: Processing LLM output for legal entity lookup")
+        logger.info(f"LLM meta table payer name: {payer_name}")
         
-        # Look up the legal entity UUID
-        return await self.lookup_legal_entity_uuid(payer_name)
+        if not payer_name:
+            logger.warning("No payer legal name found in LLM output, using default group")
+            logger.info(f"Using default group UUID: {DEFAULT_GROUP_UUID}")
+            return DEFAULT_GROUP_UUID
+        
+        # Normalize payer name
+        normalized_name = self._normalize_company_name(payer_name)
+        logger.info(f"Group detection: Normalized payer name from '{payer_name}' to '{normalized_name}'")
+        payer_name = normalized_name
+        
+        logger.info(f"Looking up group UUID for payer: {payer_name}")
+        
+        # Query Firestore for matching legal entity group
+        legal_entities = await self.dao.query_documents("legal_entity_group", [])
+        
+        # Iterate through legal entities to find a match
+        for entity in legal_entities:
+            group_name = entity.get("group_name", "").lower().strip()
+            if group_name in payer_name or payer_name in group_name:
+                logger.info(f"Group detection: Found matching legal entity group:")
+                logger.info(f"  Group name: {entity['group_name']}")
+                logger.info(f"  Group UUID: {entity['legal_entity_group_uuid']}")
+                logger.info(f"  Match type: {'Payer contains group' if group_name in payer_name else 'Group contains payer'}")
+                return entity['legal_entity_group_uuid']
+        
+        # If no match found, return default group
+        logger.warning(f"No matching legal entity group found for payer {payer_name}, using default group")
+        logger.info(f"Using default group UUID: {DEFAULT_GROUP_UUID}")
+        return DEFAULT_GROUP_UUID
     
     # Synchronous version for backwards compatibility
     def lookup_legal_entity_uuid_sync(self, payer_name: str) -> str:
