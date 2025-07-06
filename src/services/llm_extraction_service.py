@@ -64,6 +64,17 @@ class LLMExtractionService:
                 group_uuid=group_uuids[0] if group_uuids and len(group_uuids) > 0 else None
             )
             
+            # Log meta fields from LLM output
+            meta_table = extracted_data.get('metaTable', {})
+            logger.debug(f"LLM META FIELDS: {json.dumps(meta_table, default=str)}")
+            
+            # Check specific meta fields
+            logger.debug(f"META paymentAdviceNumber: {meta_table.get('paymentAdviceNumber')}")
+            logger.debug(f"META paymentAdviceDate: {meta_table.get('paymentAdviceDate')}")
+            logger.debug(f"META paymentAdviceAmount: {meta_table.get('paymentAdviceAmount')}")
+            logger.debug(f"META payersLegalName: {meta_table.get('payersLegalName')}")
+            logger.debug(f"META payeesLegalName: {meta_table.get('payeesLegalName')}")
+            
             # Post-process the extraction based on group requirements if needed
             if group_uuids and len(group_uuids) > 0:
                 extracted_data = await self._post_process_by_group(extracted_data, group_uuids[0])
