@@ -15,10 +15,10 @@ from src.models.schemas import BatchRunStatus
 
 # Import components
 from src.batch_worker.batch_manager import BatchManager
-from src.batch_worker.email_processor import EmailProcessor
+from src.services.email.email_processor import EmailProcessor
 from src.services.payment_processing_service import PaymentProcessingService
 from src.services.llm_extraction_service import LLMExtractionService
-from src.batch_worker.sap_integration import SapIntegrator
+from src.external_apis.sap.sap_integration import SapIntegrator
 import src.batch_worker.helpers as helpers
 
 # Import configuration
@@ -65,13 +65,13 @@ class BatchWorker:
         self.dao = FirestoreDAO(collection_prefix=self.collection_prefix)
         
         # Initialize GCS uploader
-        from src.adapters.gcs_uploader import GCSUploader
+        from src.external_apis.adapters.gcs_uploader import GCSUploader
         self.gcs_uploader = GCSUploader(bucket_name=DEFAULT_GCS_BUCKET_NAME)
         
         # Initialize email reader based on configuration
         if use_gmail and gmail_credentials_path:
             # Use Gmail adapter if available and requested
-            from src.adapters.gmail_reader import GmailReader, GMAIL_AVAILABLE
+            from src.external_apis.adapters.gmail_reader import GmailReader, GMAIL_AVAILABLE
             if not GMAIL_AVAILABLE:
                 raise ImportError("Gmail adapter was requested but dependencies are not available")
                 

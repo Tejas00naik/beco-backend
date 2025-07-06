@@ -1,4 +1,4 @@
-"""SAP integration for the batch worker."""
+"""SAP integration for external APIs."""
 
 import logging
 from typing import Optional, Dict, Any, List

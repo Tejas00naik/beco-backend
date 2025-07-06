@@ -1,4 +1,4 @@
-"""Email processing functionality for the batch worker."""
+"""Email processing service for payment advice extraction."""
 
 import logging
 import uuid
@@ -57,6 +57,9 @@ class EmailProcessor:
             received_at = email_data.get("received_at", datetime.utcnow())
             
             logger.info(f"Processing email {email_id} from {sender}: {subject}")
+            
+            # Initialize llm_output to empty dict in case there are no attachments
+            llm_output = {}
             
             # Upload email content to GCS
             email_uuid = email_id
