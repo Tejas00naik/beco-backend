@@ -8,8 +8,8 @@ from typing import Dict, Any, Optional, List
 # Import models
 from models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
 
-# Import legal entity detector
-from src.llm_integration.legal_entity_detector import LegalEntityDetector
+# Import legal entity lookup service
+from src.services.legal_entity_lookup import LegalEntityLookupService
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,8 @@ class EmailProcessor:
         self.llm_extractor = llm_extractor
         self.sap_integrator = sap_integrator
         
-        # Initialize the legal entity detector for the first step
-        self.legal_entity_detector = LegalEntityDetector(dao)
+        # Initialize the legal entity lookup service
+        self.legal_entity_lookup = LegalEntityLookupService(dao)
     
     async def process_email(self, email_data: Dict[str, Any], batch_run_id: str, 
                            payment_processor) -> bool:
@@ -179,9 +179,9 @@ class EmailProcessor:
                     # Extract text content from attachment if needed (e.g., PDF)
                     attachment_text = attachment.get('text_content', '') or ''
                     
-                    # STEP 1: Legal entity detection using a simple prompt
+                    # STEP 1: Legal entity detection using the service layer
                     logger.info(f"STEP 1: Starting legal entity detection for attachment {attachment_filename}")
-                    detection_result = await self.legal_entity_detector.detect_legal_entity_with_llm(
+                    detection_result = await self.legal_entity_lookup.detect_legal_entity(
                         email_body=email_text_content,
                         document_text=attachment_text
                     )
