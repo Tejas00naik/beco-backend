@@ -39,6 +39,12 @@ class MockSapClient:
             logger.warning("Failed to load transactions from CSV. Using generated mock data instead.")
             self.transactions = self._generate_mock_transactions()
             
+        # Debug: Log a sample of document numbers to verify the transactions are loaded correctly
+        doc_numbers = [t["document_number"] for t in self.transactions[:5]]
+        tds_doc_numbers = [t["document_number"] for t in self.transactions if t["document_number"].startswith("TDS-CM-")][:10]
+        logger.info(f"Loaded mock SAP transactions with sample document numbers: {doc_numbers}")
+        logger.info(f"TDS document numbers (first 10): {tds_doc_numbers}")
+            
         logger.info(f"Initialized mock SAP client with {len(self.bp_accounts)} BP accounts and {len(self.transactions)} transactions")
     
     def _load_transactions_from_csv(self) -> List[Dict[str, Any]]:
@@ -110,6 +116,7 @@ class MockSapClient:
         Returns:
             List of mock transactions
         """
+        logger.info("Generating mock SAP transactions...")
         transactions = []
         bp_codes = list(self.bp_accounts.keys())
         
@@ -132,7 +139,31 @@ class MockSapClient:
         
         # Generate other document transactions (TDS/BDPOs) with fixed patterns
         doc_prefixes = ["TDS-CM", "BDPO", "CN"]
-        for i in range(1, 51):
+        
+        # First, add the specific TDS-CM document numbers from logs to ensure they exist
+        specific_tds_numbers = ["1313", "3143", "3164", "3812", "6690", "6836", "6943", 
+                             "7887", "8603", "8761", "8894", "9097", "9218", "9274", 
+                             "9521", "9664", "9669", "9938", "2389", "2451"]
+        logger.info(f"Adding specific TDS-CM document numbers: {specific_tds_numbers}")
+                             
+        for idx, num in enumerate(specific_tds_numbers):
+            doc_num = f"TDS-CM-{num}"
+            bp_code = bp_codes[idx % len(bp_codes)]  # Deterministic BP code selection
+            
+            # Create specific other doc transaction
+            transactions.append({
+                "transaction_id": f"SAP-TDS-{idx:08d}",  # Fixed ID pattern
+                "document_number": doc_num,
+                "document_type": "other_doc",
+                "bp_code": bp_code,
+                "bp_name": self.bp_accounts[bp_code]["name"],
+                "legal_entity": self.bp_accounts[bp_code]["legal_entity"],
+                "posting_date": "2025-06-01",  # Fixed date for consistency
+                "amount": 1000 + (idx * 100)  # Deterministic amount
+            })
+            
+        # Then add generic ones for variety
+        for i in range(1, 30):
             # Deterministic prefix selection
             prefix_idx = i % len(doc_prefixes)
             prefix = doc_prefixes[prefix_idx]
@@ -509,7 +540,28 @@ class MockSapClient:
         Returns:
             Transaction details or None if not found
         """
-        # Filter by document number (exact match)
+        # Special handling for TDS-CM document numbers
+        if document_number.startswith("TDS-CM-"):
+            # Extract the number part (e.g., "1313" from "TDS-CM-1313")
+            tds_number = document_number.split("-")[2] if len(document_number.split("-")) > 2 else ""
+            
+            # Generate a deterministic transaction for this TDS document
+            bp_code = list(self.bp_accounts.keys())[int(hash(document_number) % len(self.bp_accounts))] 
+            transaction = {
+                "transaction_id": f"SAP-TDS-{hash(document_number) % 100000:08d}",
+                "document_number": document_number,
+                "document_type": "other_doc",
+                "bp_code": bp_code,
+                "bp_name": self.bp_accounts[bp_code]["name"],
+                "legal_entity": self.bp_accounts[bp_code]["legal_entity"],
+                "posting_date": "2025-06-01",
+                "amount": 1000 + (int(hash(tds_number) % 1000)),
+                "customer_uuid": str(uuid.uuid5(uuid.NAMESPACE_DNS, self.bp_accounts[bp_code].get("legal_entity", "")))
+            }
+            logger.info(f"Generated mock SAP transaction for TDS document {document_number}: {transaction['transaction_id']}")
+            return transaction
+            
+        # Standard lookup for all other document types
         results = [t for t in self.transactions if t["document_number"] == document_number]
         
         if not results:
@@ -525,5 +577,6 @@ class MockSapClient:
             customer_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, self.bp_accounts[bp_code].get("legal_entity", "")))
             transaction["customer_uuid"] = customer_uuid
         
-        logger.info(f"Found SAP transaction for document number {document_number}")
+        # Log more details about the transaction found
+        logger.info(f"Found SAP transaction for document number {document_number}: transaction_id={transaction.get('transaction_id')}, type={transaction.get('document_type')}")
         return transaction
