@@ -496,3 +496,34 @@ class MockSapClient:
             "transaction_id": "SAP-RECON-12345678",
             "message": "Reconciliation successful"
         }
+        
+    def get_transaction_by_document_number(self, document_number: str) -> Optional[Dict[str, Any]]:
+        """Get transaction details by document number
+        
+        This is a non-async wrapper around search_transactions to maintain
+        backward compatibility with the SapIntegrator implementation
+        
+        Args:
+            document_number: Document number to search for
+            
+        Returns:
+            Transaction details or None if not found
+        """
+        # Filter by document number (exact match)
+        results = [t for t in self.transactions if t["document_number"] == document_number]
+        
+        if not results:
+            logger.warning(f"No SAP transaction found for document number {document_number}")
+            return None
+            
+        # Return the first match with additional customer info
+        transaction = results[0]
+        bp_code = transaction.get("bp_code")
+        
+        # Add customer UUID for convenience
+        if bp_code and bp_code in self.bp_accounts:
+            customer_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, self.bp_accounts[bp_code].get("legal_entity", "")))
+            transaction["customer_uuid"] = customer_uuid
+        
+        logger.info(f"Found SAP transaction for document number {document_number}")
+        return transaction

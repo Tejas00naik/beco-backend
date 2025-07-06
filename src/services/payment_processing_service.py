@@ -131,17 +131,37 @@ class PaymentProcessingService:
             await self.payment_advice_repo.create(payment_advice)
             logger.info(f"Created payment advice {payment_advice_uuid} for email log {email_log_uuid}")
             
-            # Process invoice data
+            # Log full LLM output for debugging
+            logger.info(f"FULL LLM OUTPUT: {json.dumps(llm_output, default=str)}")
+            logger.info(f"LLM OUTPUT KEYS: {list(llm_output.keys())}")
+            
+            # Process invoice data - check both camelCase and snake_case keys
             if "invoiceTable" in llm_output and llm_output["invoiceTable"]:
                 await self._process_invoices(payment_advice_uuid, llm_output["invoiceTable"])
+            elif "invoice_table" in llm_output and llm_output["invoice_table"]:
+                await self._process_invoices(payment_advice_uuid, llm_output["invoice_table"])
                 
-            # Process other doc data
-            if "otherDocTable" in llm_output and llm_output["otherDocTable"]:
+            # Process other doc data (LLM calls this settlement_table or settlementDocTable)
+            if "settlementDocTable" in llm_output and llm_output["settlementDocTable"]:
+                await self._process_other_docs(payment_advice_uuid, llm_output["settlementDocTable"])
+            elif "settlement_table" in llm_output and llm_output["settlement_table"]:
+                await self._process_other_docs(payment_advice_uuid, llm_output["settlement_table"])
+            elif "otherDocTable" in llm_output and llm_output["otherDocTable"]:
                 await self._process_other_docs(payment_advice_uuid, llm_output["otherDocTable"])
+            elif "other_doc_table" in llm_output and llm_output["other_doc_table"]:
+                await self._process_other_docs(payment_advice_uuid, llm_output["other_doc_table"])
                 
-            # Process settlement data
-            if "settlementTable" in llm_output and llm_output["settlementTable"]:
+            # Process settlement data (LLM calls this reconciliation_statement or reconciliationTable)
+            if "reconciliationTable" in llm_output and llm_output["reconciliationTable"]:
+                await self._process_settlements(payment_advice_uuid, llm_output["reconciliationTable"])
+            elif "reconciliation_table" in llm_output and llm_output["reconciliation_table"]:
+                await self._process_settlements(payment_advice_uuid, llm_output["reconciliation_table"])
+            elif "reconciliation_statement" in llm_output and llm_output["reconciliation_statement"]:
+                await self._process_settlements(payment_advice_uuid, llm_output["reconciliation_statement"])
+            elif "settlementTable" in llm_output and llm_output["settlementTable"]:
                 await self._process_settlements(payment_advice_uuid, llm_output["settlementTable"])
+            elif "settlement_data" in llm_output and llm_output["settlement_data"]:
+                await self._process_settlements(payment_advice_uuid, llm_output["settlement_data"])
                 
             # Update payment advice status
             await self.payment_advice_repo.update_status(payment_advice_uuid, PaymentAdviceStatus.FETCHED)
@@ -237,29 +257,64 @@ class PaymentProcessingService:
         """Process settlement data and create settlement records."""
         try:
             for item in settlement_data:
-                # Both invoice and other doc numbers are required
-                if "invoice_number" not in item or "other_doc_number" not in item:
-                    logger.warning(f"Skipping settlement without invoice_number or other_doc_number: {item}")
+                # Check invoice number is available
+                if "invoice_number" not in item:
+                    logger.warning(f"Skipping settlement without invoice_number: {item}")
+                    continue
+                
+                # Map settlement_doc_number to other_doc_number if needed
+                other_doc_number = item.get("other_doc_number")
+                if not other_doc_number and "settlement_doc_number" in item:
+                    other_doc_number = item["settlement_doc_number"]
+                    # Store it in the item for later use
+                    item["other_doc_number"] = other_doc_number
+                
+                # Skip if we still don't have an other_doc_number
+                if not other_doc_number:
+                    logger.warning(f"Skipping settlement without other_doc_number or settlement_doc_number: {item}")
                     continue
                     
-                # Find invoice and other doc UUIDs
+                # Find invoice UUID
                 invoices = await self.invoice_repo.find_by_unique_key(
                     payment_advice_uuid, 
                     item["invoice_number"]
                 )
                 
-                other_docs = await self.other_doc_repo.find_by_unique_key(
-                    payment_advice_uuid, 
-                    item["other_doc_number"]
-                )
-                
                 if not invoices:
                     logger.warning(f"Cannot find invoice {item['invoice_number']} for payment advice {payment_advice_uuid}")
                     continue
-                    
+                
+                # Find other_doc UUID - or create if missing
+                other_docs = await self.other_doc_repo.find_by_unique_key(
+                    payment_advice_uuid, 
+                    other_doc_number
+                )
+                
+                # Create other_doc if it doesn't exist
                 if not other_docs:
-                    logger.warning(f"Cannot find other doc {item['other_doc_number']} for payment advice {payment_advice_uuid}")
-                    continue
+                    logger.info(f"Creating missing other_doc {other_doc_number} for payment advice {payment_advice_uuid}")
+                    other_doc_uuid = str(uuid4())
+                    
+                    # Extract other doc fields from the settlement item
+                    other_doc = OtherDoc(
+                        other_doc_uuid=other_doc_uuid,
+                        payment_advice_uuid=payment_advice_uuid,
+                        other_doc_number=other_doc_number,
+                        other_doc_type=item.get("settlement_doc_type", OtherDocType.OTHER.value),
+                        other_doc_date=parse_date(item.get("settlement_date")),
+                        other_doc_amount=parse_amount(item.get("total_sd_amount")),
+                        sap_transaction_id=None,
+                        customer_uuid=None,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    
+                    await self.other_doc_repo.create(other_doc)
+                    other_docs = other_doc  # Use the newly created doc
+                    logger.info(f"Created other doc {other_doc_uuid} for payment advice {payment_advice_uuid}")
+                else:
+                    logger.info(f"Found existing other doc for {other_doc_number} in payment advice {payment_advice_uuid}")
+
                 
                 # Create settlement
                 settlement_uuid = str(uuid4())

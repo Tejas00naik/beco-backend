@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 # Import models
-from models.schemas import PaymentAdvice, PaymentAdviceStatus
+from src.models.schemas import PaymentAdvice, PaymentAdviceStatus
 
 # Import helpers
 from .utils import parse_date, parse_amount

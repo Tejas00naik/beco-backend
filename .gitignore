@@ -38,6 +38,9 @@ credentials.json
 # Mock data that may contain sensitive info
 mock_data/processed_emails.json
 
+# Data directory containing mock SAP transactions
+/data/
+
 # IDE
 .idea/
 .vscode/

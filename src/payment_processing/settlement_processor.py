@@ -9,7 +9,7 @@ import uuid
 from typing import Dict, Any, List
 
 # Import models
-from models.schemas import Settlement, SettlementStatus
+from src.models.schemas import Settlement, SettlementStatus
 
 # Import helpers
 from .utils import parse_amount

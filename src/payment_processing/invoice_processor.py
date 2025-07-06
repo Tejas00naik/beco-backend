@@ -9,7 +9,7 @@ import uuid
 from typing import Dict, Any, List
 
 # Import models
-from models.schemas import Invoice, InvoiceStatus
+from src.models.schemas import Invoice, InvoiceStatus
 
 # Import helpers
 from .utils import parse_date, parse_amount, check_document_exists

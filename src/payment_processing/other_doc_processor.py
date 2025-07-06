@@ -9,7 +9,7 @@ import uuid
 from typing import Dict, Any, List
 
 # Import models
-from models.schemas import OtherDoc, OtherDocType
+from src.models.schemas import OtherDoc, OtherDocType
 
 # Import helpers
 from .utils import parse_date, parse_amount, check_document_exists
