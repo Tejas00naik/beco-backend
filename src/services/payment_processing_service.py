@@ -1,6 +1,7 @@
 """Service layer for payment processing operations."""
 
 import logging
+import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from uuid import uuid4
@@ -63,14 +64,69 @@ class PaymentProcessingService:
         try:
             # Create payment advice
             payment_advice_uuid = str(uuid4())
+            
+            # Extract meta fields from the LLM output
+            # Check both camelCase and snake_case keys for metaTable/meta_table compatibility
+            meta_table = llm_output.get('metaTable', llm_output.get('meta_table', {}))
+            
+            # Extract payment advice number - check both camelCase and snake_case keys
+            payment_advice_number = meta_table.get('paymentAdviceNumber') or meta_table.get('payment_advice_number')
+            logger.debug(f"Raw paymentAdviceNumber from LLM: {payment_advice_number}")
+            
+            # Extract payment advice date - check both camelCase and snake_case keys
+            payment_advice_date = None
+            date_str = meta_table.get('paymentAdviceDate') or meta_table.get('payment_advice_date') or meta_table.get('settlement_date')
+            if date_str:
+                payment_advice_date = parse_date(date_str)
+                logger.debug(f"Parsed paymentAdviceDate from LLM: {date_str} -> {payment_advice_date}")
+            
+            # Extract payment advice amount - check both camelCase and snake_case keys
+            payment_advice_amount = None
+            amount_str = meta_table.get('paymentAdviceAmount') or meta_table.get('payment_advice_amount') or meta_table.get('payment_amount')
+            if amount_str:
+                payment_advice_amount = parse_amount(amount_str)
+                logger.debug(f"Parsed paymentAdviceAmount from LLM: {amount_str} -> {payment_advice_amount}")
+                
+            # Extract payer and payee names - check both camelCase and snake_case keys
+            payer_name = meta_table.get('payersLegalName') or meta_table.get('payer_legal_name') or meta_table.get('payer_name')
+            payee_name = meta_table.get('payeesLegalName') or meta_table.get('payee_legal_name') or meta_table.get('payee_name')
+            logger.debug(f"Extracted payer/payee names: {payer_name} / {payee_name}")
+            
+            # For debugging
+            logger.debug(f"Full meta_table keys: {meta_table.keys()}")
+            
+            # Log meta fields extraction
+            logger.info(f"Extracted meta fields from LLM output:")
+            logger.info(f"  Payment Advice Number: {payment_advice_number}")
+            logger.info(f"  Payment Advice Date: {payment_advice_date}")
+            logger.info(f"  Payment Advice Amount: {payment_advice_amount}")
+            logger.info(f"  Payer Name: {payer_name}")
+            logger.info(f"  Payee Name: {payee_name}")
+            
+            # Log meta fields extracted from LLM for debugging
+            logger.info(f"META FIELDS FROM LLM OUTPUT: {json.dumps(meta_table)}")
+            logger.info(f"META FIELD paymentAdviceNumber: {meta_table.get('paymentAdviceNumber')}")
+            logger.info(f"META FIELD paymentAdviceDate: {meta_table.get('paymentAdviceDate')}")
+            logger.info(f"META FIELD paymentAdviceAmount: {meta_table.get('paymentAdviceAmount')}")
+            logger.info(f"META FIELD payersLegalName: {meta_table.get('payersLegalName')}")
+            logger.info(f"META FIELD payeesLegalName: {meta_table.get('payeesLegalName')}")
+            
+            # Create the payment advice object with meta fields
             payment_advice = PaymentAdvice(
                 payment_advice_uuid=payment_advice_uuid,
                 email_log_uuid=email_log_uuid,
                 legal_entity_uuid=legal_entity_uuid,
                 payment_advice_status=PaymentAdviceStatus.NEW.value,
+                payment_advice_number=payment_advice_number,
+                payment_advice_date=payment_advice_date,
+                payment_advice_amount=payment_advice_amount,
+                payer_name=payer_name,
+                payee_name=payee_name,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
+            
+            logger.info(f"PAYMENT ADVICE OBJECT: payment_advice_number={payment_advice.payment_advice_number}, payment_advice_date={payment_advice.payment_advice_date}, payment_advice_amount={payment_advice.payment_advice_amount}, payer_name={payment_advice.payer_name}, payee_name={payment_advice.payee_name}")
             
             await self.payment_advice_repo.create(payment_advice)
             logger.info(f"Created payment advice {payment_advice_uuid} for email log {email_log_uuid}")
