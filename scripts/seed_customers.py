@@ -27,7 +27,7 @@ CUSTOMER_DATA = [
         "state": "Karnataka",
         "payment_term_in_days": 30,
         "is_active": True,
-        "legal_entity_uuid": "amazon-services-123456"
+        "legal_entity_uuid": "amazon-seller-services-789012"
     },
     {
         "customer_uuid": "amazon-development-customer-123",
@@ -37,7 +37,7 @@ CUSTOMER_DATA = [
         "state": "Karnataka",
         "payment_term_in_days": 30,
         "is_active": True,
-        "legal_entity_uuid": "amazon-development-123456"
+        "legal_entity_uuid": "amazon-clicktech-services-456789"
     },
     {
         "customer_uuid": "flipkart-india-customer-123",

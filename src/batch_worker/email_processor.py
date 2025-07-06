@@ -8,6 +8,9 @@ from typing import Dict, Any, Optional, List
 # Import models
 from models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
 
+# Import legal entity detector
+from src.llm_integration.legal_entity_detector import LegalEntityDetector
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +33,9 @@ class EmailProcessor:
         self.gcs_uploader = gcs_uploader
         self.llm_extractor = llm_extractor
         self.sap_integrator = sap_integrator
+        
+        # Initialize the legal entity detector for the first step
+        self.legal_entity_detector = LegalEntityDetector(dao)
     
     async def process_email(self, email_data: Dict[str, Any], batch_run_id: str, 
                            payment_processor) -> bool:
@@ -170,10 +176,48 @@ class EmailProcessor:
                             subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
                             logger.warning("Failed to extract text from PDF attachment due to missing dependencies")
                     
-                    # Call LLM for this specific attachment
-                    llm_output = await self.llm_extractor.process_attachment_for_payment_advice(
-                        email_text_content, attachment
+                    # Extract text content from attachment if needed (e.g., PDF)
+                    attachment_text = attachment.get('text_content', '') or ''
+                    
+                    # STEP 1: Legal entity detection using a simple prompt
+                    logger.info(f"STEP 1: Starting legal entity detection for attachment {attachment_filename}")
+                    detection_result = await self.legal_entity_detector.detect_legal_entity_with_llm(
+                        email_body=email_text_content,
+                        document_text=attachment_text
                     )
+                    
+                    legal_entity_uuid = detection_result.get('legal_entity_uuid')
+                    group_uuid = detection_result.get('group_uuid')
+                    
+                    logger.info(f"Legal entity detection result: legal_entity_uuid={legal_entity_uuid}, group_uuid={group_uuid}")
+                    
+                    # Update the email_log with group_uuid immediately if found
+                    if group_uuid:
+                        # Add the group_uuid to the email_log.group_uuids array if not already present
+                        if not email_log.group_uuids:
+                            email_log.group_uuids = []
+                            
+                        if group_uuid not in email_log.group_uuids:
+                            email_log.group_uuids.append(group_uuid)
+                            logger.info(f"Added group_uuid {group_uuid} to email_log {email_log.email_log_uuid}")
+                            
+                            # Update the email_log in Firestore
+                            await self.dao.update_document("email_log", email_log.email_log_uuid, {
+                                "group_uuids": email_log.group_uuids
+                            })
+                            logger.info(f"Updated email_log {email_log.email_log_uuid} with group_uuids: {email_log.group_uuids}")
+                    
+                    # STEP 2: Process the attachment with the full extraction prompt
+                    logger.info(f"STEP 2: Starting full payment advice extraction for attachment {attachment_filename}")
+                    llm_output = await self.llm_extractor.process_attachment_for_payment_advice(
+                        email_text_content, attachment, group_uuid=group_uuid
+                    )
+                    
+                    # Add the legal entity and group from step 1 to the llm_output
+                    if legal_entity_uuid:
+                        llm_output["legal_entity_uuid"] = legal_entity_uuid
+                    if group_uuid:
+                        llm_output["group_uuid"] = group_uuid
                     
                     # Print detailed summary of extracted data
                     logger.info(f"LLM extracted data for attachment {attachment_filename}:")

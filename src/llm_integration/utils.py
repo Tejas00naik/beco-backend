@@ -31,11 +31,23 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
     # Meta table -> metaTable fields
     if "meta_table" in llm_output and llm_output["meta_table"] is not None and isinstance(llm_output["meta_table"], dict):
         meta = llm_output["meta_table"]
-        # Extract and add to processed output with correct camelCase keys
-        processed_output["paymentAdviceDate"] = meta.get("settlement_date")  # keep DD-MMM-YYYY format
+        # Create a metaTable dictionary with camelCase keys
+        meta_table = {
+            "paymentAdviceDate": meta.get("settlement_date"),  # keep DD-MMM-YYYY format
+            "paymentAdviceNumber": meta.get("payment_advice_number"),
+            "payersLegalName": meta.get("payer_legal_name"),
+            "payeesLegalName": meta.get("payee_legal_name"),
+            "paymentAdviceAmount": meta.get("payment_advice_amount")
+        }
+        processed_output["metaTable"] = meta_table
+        
+        # For backward compatibility, also add at top level (can remove later)
+        processed_output["paymentAdviceDate"] = meta.get("settlement_date")  
         processed_output["paymentAdviceNumber"] = meta.get("payment_advice_number")
         processed_output["payersLegalName"] = meta.get("payer_legal_name")
         processed_output["payeesLegalName"] = meta.get("payee_legal_name")
+        
+        logger.info(f"Meta table processed: {meta_table}")
     else:
         logger.warning("meta_table is missing or invalid in LLM output")
         # Add default values to ensure the processor doesn't crash
@@ -131,37 +143,51 @@ async def convert_llm_output_to_processor_format(llm_output: Dict[str, Any]) -> 
     
     return processed_output
 
-async def process_attachment_with_llm(attachment_text: str, dao: FirestoreDAO) -> Dict[str, Any]:
+async def process_attachment_with_llm(attachment_text: str, email_body: Optional[str] = None, dao: FirestoreDAO = None) -> Dict[str, Any]:
     """
     Process an attachment text with the LLM and convert to the PaymentProcessor format.
     
     Args:
         attachment_text: The text extracted from the attachment
+        email_body: Optional email body text to provide additional context
         dao: FirestoreDAO instance for group/legal entity lookups
         
     Returns:
         Processed payment advice data in the PaymentProcessor format
     """
     try:
-        # Initialize LLM extractor
+        # Initialize LLM extractor and legal entity lookup service
+        from src.services.legal_entity_lookup import LegalEntityLookupService
+        
         extractor = LLMExtractor(dao=dao)
+        legal_entity_service = LegalEntityLookupService(dao=dao)
         
-        # First pass: Process with default prompt to get basic structure
-        llm_output = await extractor.process_document(attachment_text)
+        # Step 1: Use LLM to detect legal entity from email body and attachment text
+        logger.info("Using LLM to detect legal entity from email and attachment")
+        detection_result = await legal_entity_service.detect_legal_entity_with_llm(
+            email_body=email_body, 
+            document_text=attachment_text
+        )
         
-        # Detect group based on payer name in output
-        group_uuid = await extractor.detect_group_from_output(llm_output)
+        # Extract the detected group_uuid and legal_entity_uuid
+        group_uuid = detection_result.get("group_uuid")
+        legal_entity_uuid = detection_result.get("legal_entity_uuid")
         
-        # Second pass with group-specific prompt if a group was detected
-        if group_uuid:
-            logger.info(f"Running second pass with group-specific prompt for group_uuid={group_uuid}")
-            llm_output = await extractor.process_document(attachment_text, group_uuid=group_uuid)
+        logger.info(f"LLM detected legal_entity_uuid: {legal_entity_uuid}")
+        logger.info(f"LLM detected group_uuid: {group_uuid}")
+        
+        # Step 2: Process document with group-specific prompt if a group was detected
+        logger.info(f"Processing document with group-specific prompt for group_uuid={group_uuid}")
+        llm_output = await extractor.process_document(
+            document_text=attachment_text, 
+            email_body=email_body, 
+            group_uuid=group_uuid
+        )
         
         # Convert LLM output to PaymentProcessor format
         processor_format = await convert_llm_output_to_processor_format(llm_output)
         
         # Add detected legal entity/group information
-        legal_entity_uuid = await extractor.detect_legal_entity_from_output(llm_output)
         processor_format["legal_entity_uuid"] = legal_entity_uuid
         processor_format["group_uuid"] = group_uuid
         

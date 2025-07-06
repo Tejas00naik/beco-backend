@@ -16,7 +16,7 @@ from models.schemas import BatchRunStatus
 # Import components
 from src.batch_worker.batch_manager import BatchManager
 from src.batch_worker.email_processor import EmailProcessor
-from src.batch_worker.payment_processor import PaymentProcessor
+from src.payment_processing import PaymentProcessor
 from src.batch_worker.sap_integration import SapIntegrator
 import src.batch_worker.helpers as helpers
 
@@ -39,7 +39,8 @@ class BatchWorker:
                  run_mode: Literal["incremental", "full_refresh"] = "incremental",
                  use_gmail: bool = False,
                  gmail_credentials_path: str = None,
-                 since_timestamp: Optional[datetime] = None):
+                 since_timestamp: Optional[datetime] = None,
+                 last_n_emails: Optional[int] = None):
         """
         Initialize the batch worker.
         
@@ -55,6 +56,7 @@ class BatchWorker:
         self.run_mode = run_mode
         self.collection_prefix = "dev_" if is_test else ""
         self.initial_timestamp = since_timestamp  # Store the provided timestamp
+        self.last_n_emails = last_n_emails  # Store the last N emails limit
         
         logger.info(f"Initializing batch worker. is_test={is_test}, mailbox_id={mailbox_id}")
         
@@ -219,6 +221,13 @@ class BatchWorker:
             try:
                 logger.info(f"Fetching emails for {self.mailbox_id} with since_timestamp={since_timestamp}")
                 new_emails = self.email_reader.get_unprocessed_emails(since_timestamp)
+                
+                # Apply last_n_emails limit if specified
+                if self.last_n_emails and len(new_emails) > self.last_n_emails:
+                    logger.info(f"Limiting to last {self.last_n_emails} emails (from {len(new_emails)} total)")
+                    # Sort by received_at in descending order to get most recent emails
+                    new_emails.sort(key=lambda x: x.get("received_at", datetime.min), reverse=True)
+                    new_emails = new_emails[:self.last_n_emails]
             except Exception as e:
                 logger.error(f"Error getting unprocessed emails: {str(e)}")
                 new_emails = []

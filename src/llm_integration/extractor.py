@@ -97,8 +97,12 @@ class LLMExtractor:
         # Pre-detect group using a simple extraction technique if not provided
         if not group_uuid:
             logger.info("No group_uuid provided, attempting to pre-detect group...")
+            # Check email body for Amazon-related keywords
+            if email_body and self._pre_detect_amazon_format(email_body):
+                logger.info("Pre-detected Amazon format from email body")
+                group_uuid = "group-amazon-12345"
             # Quick heuristic for Amazon detection
-            if "Clicktech Retail" in document_text or "Amazon" in document_text:
+            elif "Clicktech Retail" in document_text or "Amazon" in document_text:
                 group_uuid = "group-amazon-12345"
                 logger.info(f"Pre-detected group_uuid: {group_uuid} from document text")
             
@@ -590,6 +594,34 @@ class LLMExtractor:
             # Return empty result on error
             return {}
     
+    def _pre_detect_amazon_format(self, text: str) -> bool:
+        """
+        Pre-detect Amazon format from email body or document text before LLM processing.
+        
+        Args:
+            text: Email body or document text to check
+            
+        Returns:
+            True if Amazon format detected, False otherwise
+        """
+        if not isinstance(text, str):
+            return False
+            
+        # Look for Amazon-related keywords in the text
+        amazon_keywords = [
+            "amazon", "clicktech", "retail private limited", 
+            "clicktech retail", "payment advice", "amazon.in",
+            "amazon development center", "amazon seller services"
+        ]
+        
+        text_lower = text.lower()
+        for keyword in amazon_keywords:
+            if keyword.lower() in text_lower:
+                logger.debug(f"Pre-detected Amazon format from keyword: {keyword}")
+                return True
+                
+        return False
+        
     def _detect_amazon_format(self, output: Dict[str, Any]) -> bool:
         """
         Detect if the output appears to be from an Amazon payment advice.
@@ -743,7 +775,7 @@ class LLMExtractor:
             # Return the original output to avoid making the situation worse
             return processed_output
             
-    async def process_attachment_for_payment_advice(self, email_text_content: str, attachment_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_attachment_for_payment_advice(self, email_text_content: str, attachment_data: Dict[str, Any], group_uuid: str = None) -> Dict[str, Any]:
         """
         Process a single attachment as a payment advice.
         
@@ -767,39 +799,51 @@ class LLMExtractor:
                 
             # Get filename for logging
             attachment_filename = attachment_data.get("filename", "unknown")
-            logger.info(f"Processing attachment {attachment_filename} with real LLM using GPT-4-turbo")
+            logger.info(f"Processing attachment {attachment_filename} with real LLM using openai")
             
-            # Check if we can detect a group for this document
-            # This is a pre-check to use the right prompt template
-            detected_group_uuid = None
-            if self.dao:
-                # Simplified detection for now to match MockLLMExtractor approach
-                # Use text from both email body and attachment to improve detection
-                combined_text = f"{email_text_content} {attachment_text}"
-                payee_name = self._extract_potential_payee_name(combined_text)
-                
-                if payee_name:
-                    logger.info(f"Pre-detected payee name: {payee_name}")
-                    # Hard-code Amazon group for now, just like MockLLMExtractor
-                    # In the future, we would implement _get_group_uuid_for_legal_entity
-                    if "amazon" in payee_name.lower() or "kwick" in payee_name.lower() or "clicktech" in payee_name.lower():
-                        detected_group_uuid = "group-amazon-12345"
-                    logger.info(f"Pre-detected group UUID: {detected_group_uuid}")
+            # Use the group_uuid that was provided from the two-step process
+            # If no group_uuid was provided, then try to detect one
+            if group_uuid:
+                logger.info(f"Using provided group_uuid from two-step process: {group_uuid}")
+            else:
+                logger.info(f"No group_uuid provided, attempting to detect one")
+                # Try to detect the group from text
+                if self.dao:
+                    # Use text from both email body and attachment to improve detection
+                    combined_text = f"{email_text_content} {attachment_text}"
+                    payee_name = self._extract_potential_payee_name(combined_text)
+                    
+                    if payee_name:
+                        logger.info(f"Pre-detected payee name: {payee_name}")
+                        # Hard-code Amazon group for now, just like MockLLMExtractor
+                        # In the future, we would implement _get_group_uuid_for_legal_entity
+                        if "amazon" in payee_name.lower() or "kwick" in payee_name.lower() or "clicktech" in payee_name.lower():
+                            group_uuid = "group-amazon-12345"
+                        logger.info(f"Pre-detected group UUID: {group_uuid}")
             
-            # Process the document with the LLM
+            # Process the document with the LLM using the determined group_uuid
             output = await self.process_document(
                 document_text=attachment_text,
                 email_body=email_text_content,
-                group_uuid=detected_group_uuid
+                group_uuid=group_uuid
             )
+            
+            # Log raw LLM output format for debugging
+            logger.info(f"Raw LLM output meta_table: {output.get('meta_table', {})}")
             
             # Post-processing for expected format
             from src.llm_integration.utils import convert_llm_output_to_processor_format
             processed_output = await convert_llm_output_to_processor_format(output)
             
+            # Log processed output format for debugging
+            logger.info(f"Processed LLM output metaTable: {processed_output.get('metaTable', {})}")
+            logger.info(f"Processed LLM output top-level meta fields: paymentAdviceNumber={processed_output.get('paymentAdviceNumber')}, payersLegalName={processed_output.get('payersLegalName')}, payeesLegalName={processed_output.get('payeesLegalName')}")
+            
             # Add legal entity and group UUIDs if detected
             legal_entity_uuid = await self.detect_legal_entity_from_output(output)
             group_uuid = await self.detect_group_from_output(output)
+            
+            logger.info(f"Detected legal_entity_uuid={legal_entity_uuid}, group_uuid={group_uuid} from output")
             
             if legal_entity_uuid:
                 processed_output["legal_entity_uuid"] = legal_entity_uuid

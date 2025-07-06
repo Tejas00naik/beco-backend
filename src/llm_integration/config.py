@@ -10,6 +10,19 @@ load_dotenv()
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 DEFAULT_MODEL = "gpt-4.1"  # This refers to GPT-4.1
 
+# Prompt for legal entity detection from email and attachment
+LEGAL_ENTITY_DETECTION_PROMPT = """
+You are a financial data extraction expert. I'll provide you with an email body and/or document text from a payment advice.
+
+Your task is to identify which company/legal entity sent this payment advice from the following list of possible companies:
+{legal_entity_list}
+
+Only respond with the exact name of the legal entity from the list that matches the sender. 
+If you can't confidently determine which company sent the payment advice, respond with "UNKNOWN".
+
+Don't include any explanations, just the exact company name from the list.
+"""
+
 # Mapping of group UUIDs to prompt templates
 # This allows for group-specific prompts
 PROMPT_MAP = {
