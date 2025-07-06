@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
 from src.llm_integration.config import PROMPT_MAP, DEFAULT_MODEL
-from models.firestore_dao import FirestoreDAO
+from src.repositories.firestore_dao import FirestoreDAO
 
 logger = logging.getLogger(__name__)
 
@@ -156,17 +156,27 @@ class LLMExtractor:
                 
             # Call the LLM with text
             logger.info(f"Calling {self.model} with document text")
-            response = self.openai_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": prompt_template["template"]},
-                    {"role": "user", "content": full_text}
-                ],
-                temperature=0.0  # Deterministic output
-            )
-            
-            response_text = response.choices[0].message.content
-            logger.info(f"Got response with {len(response_text)} chars")
+            try:
+                # Add timeout to prevent hanging indefinitely
+                response = self.openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": prompt_template["template"]},
+                        {"role": "user", "content": full_text}
+                    ],
+                    temperature=0.0,  # Deterministic output
+                    timeout=60.0  # 60 second timeout
+                )
+                
+                response_text = response.choices[0].message.content
+                logger.info(f"Got response with {len(response_text)} chars")
+            except Exception as e:
+                logger.error(f"Error calling OpenAI API: {str(e)}")
+                # Provide a fallback response structure to avoid cascading failures
+                response_text = '{"meta_table": {}, "invoice_table": [], "other_doc_table": [], "settlement_table": []}'
+                logger.warning(f"Using fallback response structure due to API error: {response_text}")
+                # You may want to re-raise the error after logging in certain cases
+                # raise
         
         # Extract JSON from response
         processed_output = self._extract_json_from_response(response_text)
