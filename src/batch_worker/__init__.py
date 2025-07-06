@@ -10,13 +10,14 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Literal
 
 # Import models
-from models.firestore_dao import FirestoreDAO
-from models.schemas import BatchRunStatus
+from src.repositories.firestore_dao import FirestoreDAO
+from src.models.schemas import BatchRunStatus
 
 # Import components
 from src.batch_worker.batch_manager import BatchManager
 from src.batch_worker.email_processor import EmailProcessor
-from src.payment_processing import PaymentProcessor
+from src.services.payment_processing_service import PaymentProcessingService
+from src.services.llm_extraction_service import LLMExtractionService
 from src.batch_worker.sap_integration import SapIntegrator
 import src.batch_worker.helpers as helpers
 
@@ -86,26 +87,58 @@ class BatchWorker:
             self.email_reader = MockEmailReader()
             logger.info("Using MockEmailReader for testing only")
         
-        # Initialize LLM extractor - always use real implementation
-        from src.llm_integration import LLMExtractor
+        # Initialize services
+        # Import repositories here to avoid circular imports
+        from src.repositories import (
+            LegalEntityRepository, 
+            PaymentAdviceRepository,
+            InvoiceRepository,
+            OtherDocRepository,
+            SettlementRepository
+        )
+        
+        # Initialize repositories
+        self.legal_entity_repo = LegalEntityRepository(self.dao)
+        self.payment_advice_repo = PaymentAdviceRepository(self.dao)
+        self.invoice_repo = InvoiceRepository(self.dao)
+        self.other_doc_repo = OtherDocRepository(self.dao)
+        self.settlement_repo = SettlementRepository(self.dao)
+        
+        # Initialize LLM extraction service
         if not os.environ.get("OPENAI_API_KEY"):
             logger.error("OPENAI_API_KEY environment variable not set. LLM extraction will fail.")
-        self.llm_extractor = LLMExtractor(dao=self.dao)
-        logger.info("Using real LLMExtractor with OpenAI API (GPT-4-turbo)")
+        self.llm_service = LLMExtractionService(self.dao, self.legal_entity_repo)
+        logger.info("Using LLMExtractionService with OpenAI API (GPT-4.1)")
         
-        # Initialize Legal Entity Lookup Service
+        # Initialize payment processing service
+        self.payment_service = PaymentProcessingService(
+            self.payment_advice_repo,
+            self.invoice_repo,
+            self.other_doc_repo,
+            self.settlement_repo
+        )
+        logger.info("Initialized PaymentProcessingService with repositories")
         from src.services.legal_entity_lookup import LegalEntityLookupService
         self.legal_entity_lookup = LegalEntityLookupService(self.dao)
         
-        # Initialize SAP client
+        # Initialize SAP client for SAP B1 integration
         from src.mocks.sap_client import MockSapClient
         self.sap_client = MockSapClient()
         
-        # Initialize component modules
-        self.batch_manager = BatchManager(self.dao, is_test, self.mailbox_id, self.run_mode)
-        self.sap_integrator = SapIntegrator(self.dao, self.sap_client)
-        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_extractor, self.sap_integrator)
-        self.payment_processor = PaymentProcessor(self.dao, self.legal_entity_lookup)
+        # Initialize batch manager
+        self.batch_manager = BatchManager(
+            dao=self.dao,
+            is_test=self.is_test,
+            mailbox_id=self.mailbox_id,
+            run_mode=self.run_mode
+        )
+        
+        # Initialize SAP integrator
+        self.sap_integrator = SapIntegrator(self.dao)
+        self.sap_integrator.sap_client = self.sap_client  # Ensure SAP integrator uses our mock client
+        
+        # Initialize email processor
+        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_service, self.sap_integrator)
         
         # Initialize counters
         self.emails_processed = 0
@@ -115,33 +148,57 @@ class BatchWorker:
         """Start a new batch run."""
         return await self.batch_manager.start_batch_run()
     
-    async def process_email(self, email_data: Dict[str, Any]) -> bool:
+    async def process_email(self, email_data: Dict[str, Any]):
         """Process a single email."""
         try:
-            result = await self.email_processor.process_email(
-                email_data, 
-                self.batch_manager.batch_run.run_id, 
-                self.payment_processor
-            )
+            # Process email and create email log
+            email_log_uuid, llm_output = await self.email_processor.process_email(email_data)
             
-            if result:
+            # Associate the email processing log with this batch run
+            processing_log_id = email_log_uuid
+            await self.dao.update_document("email_processing_log", processing_log_id, {
+                "run_id": self.batch_manager.batch_run.run_id
+            })
+            
+            # Create payment advice from LLM output using our refactored payment service
+            payment_advice_uuid = await self.create_payment_advice_from_llm_output(llm_output, email_log_uuid)
+            
+            if payment_advice_uuid:
+                # If payment advice was created, enrich with SAP data
+                logger.info(f"Enriching payment advice {payment_advice_uuid} with SAP data")
+                await self.sap_integrator.enrich_documents_with_sap_data(payment_advice_uuid)
+                
+                # Update batch run stats
                 self.batch_manager.increment_processed_count()
                 self.emails_processed += 1
+                return True
             else:
+                logger.error(f"Failed to create payment advice for email: {email_data.get('subject', 'Unknown')}")
                 self.batch_manager.increment_error_count()
                 self.errors += 1
+                return False
                 
-            return result
-            
         except Exception as e:
-            logger.error(f"Error in process_email: {str(e)}")
+            logger.error(f"Error processing email: {str(e)}")
             self.batch_manager.increment_error_count()
             self.errors += 1
             return False
     
     async def create_payment_advice_from_llm_output(self, llm_output: Dict[str, Any], email_log_uuid: str) -> Optional[str]:
-        """Create payment advice from LLM output."""
-        return await self.payment_processor.create_payment_advice_from_llm_output(llm_output, email_log_uuid)
+        """Create payment advice from LLM output using our refactored payment service."""
+        try:
+            # Use refactored payment service to process LLM output
+            payment_advice_uuid = await self.payment_service.create_payment_advice(
+                email_log_uuid=email_log_uuid,
+                llm_output=llm_output,
+                legal_entity_uuid=llm_output.get("legal_entity_uuid"),
+                group_uuids=llm_output.get("group_uuids", [])
+            )
+            logger.info(f"Created payment advice {payment_advice_uuid} from LLM output for email {email_log_uuid}")
+            return payment_advice_uuid
+        except Exception as e:
+            logger.error(f"Error creating payment advice from LLM output: {str(e)}")
+            return None
     
     async def call_sap_reconciliation(self, payment_advice, settlement):
         """Call SAP reconciliation for a settlement."""

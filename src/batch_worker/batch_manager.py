@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 # Import models
-from models.schemas import BatchRun, BatchRunStatus
+from src.models.schemas import BatchRun, BatchRunStatus
 
 logger = logging.getLogger(__name__)
 

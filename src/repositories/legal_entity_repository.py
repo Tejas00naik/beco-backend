@@ -3,7 +3,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 
-from models.firestore_dao import FirestoreDAO
+from src.repositories.firestore_dao import FirestoreDAO
 
 logger = logging.getLogger(__name__)
 

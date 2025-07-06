@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 # Import models
-from models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
+from src.models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
 
 # Import legal entity lookup service
 from src.services.legal_entity_lookup import LegalEntityLookupService
@@ -37,18 +37,16 @@ class EmailProcessor:
         # Initialize the legal entity lookup service
         self.legal_entity_lookup = LegalEntityLookupService(dao)
     
-    async def process_email(self, email_data: Dict[str, Any], batch_run_id: str, 
-                           payment_processor) -> bool:
+    async def process_email(self, email_data: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
         """
         Process a single email.
         
         Args:
             email_data: Email data from the reader
-            batch_run_id: Current batch run ID
-            payment_processor: Payment processor instance for payment advice processing
             
         Returns:
-            True if processing was successful, False otherwise
+            Tuple of (email_log_uuid, llm_output) if processing was successful
+            The caller can then use these to create payment advice records
         """
         try:
             # Extract email metadata
@@ -104,14 +102,15 @@ class EmailProcessor:
             logger.info(f"  gcs_folder_uri: {email_log.gcs_folder_uri}")
             logger.info(f"  group_uuids: {email_log.group_uuids} (will be populated later)")
             
-            # Create a processing log
+            # Create processing log
             processing_log = EmailProcessingLog(
                 email_log_uuid=email_log.email_log_uuid,
-                run_id=batch_run_id,
+                run_id="",  # Will be set by the BatchWorker later
                 processing_status=ProcessingStatus.PARSED
             )
             
-            doc_id = f"{email_log.email_log_uuid}_{batch_run_id}"
+            # Add processing log to Firestore
+            doc_id = f"{email_log.email_log_uuid}"
             await self.dao.add_document("email_processing_log", doc_id, processing_log.__dict__)
             
             # Get text content for LLM processing
@@ -254,17 +253,8 @@ class EmailProcessor:
                     if len(settlement_table) > 3:
                         logger.info(f"    ... and {len(settlement_table) - 3} more settlements")
                     
-                    # Process payment advice data and create records in Firestore
-                    payment_advice_uuid = await payment_processor.create_payment_advice_from_llm_output(llm_output, email_log.email_log_uuid)
-                    
-                    # If payment advice was created and SAP integrator is available, enrich with SAP data
-                    if payment_advice_uuid and self.sap_integrator:
-                        try:
-                            logger.info(f"Enriching payment advice {payment_advice_uuid} with SAP data")
-                            success_count, fail_count = await self.sap_integrator.enrich_documents_with_sap_data(payment_advice_uuid)
-                            logger.info(f"SAP enrichment complete: {success_count} successful updates, {fail_count} failed updates")
-                        except Exception as sap_error:
-                            logger.error(f"Error during SAP enrichment: {str(sap_error)}")
+                    # Return LLM output for further processing by the calling service
+                    # The calling service will handle payment advice creation and SAP enrichment
                     
                     processed_attachments += 1
                     
@@ -274,12 +264,12 @@ class EmailProcessor:
             logger.info(f"Successfully processed {processed_attachments}/{len(attachments)} attachments with LLM")
             
             # Update processing log status
-            processing_log.processing_status = ProcessingStatus.SAP_PUSHED
+            processing_log.processing_status = ProcessingStatus.PARSED
             await self.dao.update_document("email_processing_log", doc_id, 
-                                         {"processing_status": ProcessingStatus.SAP_PUSHED})
+                                         {"processing_status": ProcessingStatus.PARSED})
             
             logger.info(f"Successfully processed email {email_log.email_log_uuid}")
-            return True
+            return email_log.email_log_uuid, llm_output
             
         except Exception as e:
             logger.error(f"Error processing email: {str(e)}")
@@ -290,15 +280,16 @@ class EmailProcessor:
                 error_email_uuid = email_data.get("email_id", str(uuid.uuid4()))
                 processing_log = EmailProcessingLog(
                     email_log_uuid=error_email_uuid,
-                    run_id=batch_run_id,
+                    run_id="",  # Will be set by BatchWorker
                     processing_status=ProcessingStatus.ERROR,
                     error_msg=str(e)
                 )
                 
                 # Create processing log for error
-                doc_id = f"{error_email_uuid}_{batch_run_id}"
+                doc_id = f"{error_email_uuid}"
                 await self.dao.add_document("email_processing_log", doc_id, processing_log.__dict__)
             except Exception as log_error:
                 logger.error(f"Failed to create error log: {str(log_error)}")
                 
-            return False
+            # Re-raise the exception to be handled by the caller
+            raise

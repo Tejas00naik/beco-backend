@@ -10,7 +10,7 @@ import os
 import asyncio
 from typing import Optional, Dict, Any, List
 
-from models.firestore_dao import FirestoreDAO
+from src.repositories.firestore_dao import FirestoreDAO
 from src.repositories.legal_entity_repository import LegalEntityRepository
 from src.llm_integration.legal_entity_client import LegalEntityLLMClient
 from src.services.legal_entity_service import LegalEntityService
