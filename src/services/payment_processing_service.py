@@ -22,7 +22,7 @@ from src.repositories import (
     OtherDocRepository,
     SettlementRepository
 )
-from src.payment_processing.utils import parse_date, parse_amount
+from src.utils.parsing import parse_date, parse_amount
 
 logger = logging.getLogger(__name__)
 

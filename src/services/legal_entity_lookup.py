@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, List
 
 from src.repositories.firestore_dao import FirestoreDAO
 from src.repositories.legal_entity_repository import LegalEntityRepository
-from src.llm_integration.legal_entity_client import LegalEntityLLMClient
+from src.external_apis.llm.legal_entity_client import LegalEntityLLMClient
 from src.services.legal_entity_service import LegalEntityService
 
 logger = logging.getLogger(__name__)

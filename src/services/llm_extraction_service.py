@@ -8,8 +8,8 @@ import os
 
 from src.repositories import FirestoreDAO
 from src.repositories import LegalEntityRepository
-from src.llm_integration.extractor import LLMExtractor
-from src.llm_integration.config import PROMPT_MAP
+from src.external_apis.llm.extractor import LLMExtractor
+from src.external_apis.llm.config import PROMPT_MAP
 
 logger = logging.getLogger(__name__)
 

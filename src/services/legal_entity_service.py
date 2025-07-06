@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Any, Optional, List
 
 from src.repositories.legal_entity_repository import LegalEntityRepository
-from src.llm_integration.legal_entity_client import LegalEntityLLMClient
+from src.external_apis.llm.legal_entity_client import LegalEntityLLMClient
 
 logger = logging.getLogger(__name__)
 
