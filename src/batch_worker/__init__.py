@@ -65,13 +65,13 @@ class BatchWorker:
         self.dao = FirestoreDAO(collection_prefix=self.collection_prefix)
         
         # Initialize GCS uploader
-        from src.external_apis.adapters.gcs_uploader import GCSUploader
+        from src.external_apis.gcp.gcs_uploader import GCSUploader
         self.gcs_uploader = GCSUploader(bucket_name=DEFAULT_GCS_BUCKET_NAME)
         
         # Initialize email reader based on configuration
         if use_gmail and gmail_credentials_path:
             # Use Gmail adapter if available and requested
-            from src.external_apis.adapters.gmail_reader import GmailReader, GMAIL_AVAILABLE
+            from src.external_apis.gcp.gmail_reader import GmailReader, GMAIL_AVAILABLE
             if not GMAIL_AVAILABLE:
                 raise ImportError("Gmail adapter was requested but dependencies are not available")
                 
