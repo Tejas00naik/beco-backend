@@ -477,59 +477,58 @@ class ZeptoGroupProcessor(GroupProcessor):
                 
                 # Apply transformation rules based on document type
                 if doc_type.lower() == "credit memo":
-                    mapped_doc_type = "Credit note"  # Per matrix: Credit note
-                    # If Ref Doc starts with 'KK' use that, otherwise use Doc No
+                    mapped_doc_type = "Credit note"
+
+                    # -------- case 1: ref_doc starts with 'KK' --------
                     if ref_doc and ref_doc.startswith("KK"):
-                        ref_invoice_no = ref_doc
+                        # KK‑coded credit note
+                        doc_number      = ref_doc                 # OP‑table Doc number
+                        ref_invoice_no  = ""                      # blank
+                        ref_1           = doc_number              # same KK code
+                        ref_2           = doc_number              # same KK code
+                        ref_3           = "RTV"
+
+                    # -------- case 2: ref_doc without 'KK' --------
                     else:
-                        ref_invoice_no = doc_number
-                    
-                    # Extract Ref 1: value before '_' in Ref Doc
-                    if ref_doc and "_" in ref_doc:
-                        ref_1 = ref_doc.split("_")[0]
+                        doc_number      = doc_number              # keep L2 Doc No
+                        if ref_doc and "_" in ref_doc:
+                            ref_invoice_no = ref_doc.split("_")[0]
+                        else:
+                            ref_invoice_no = ref_doc or ""
+                        ref_1           = doc_number
+                        ref_2           = ref_1
+                        ref_3           = "RTV"
+
+                    # Dr/Cr logic (same for both cases)
+                    if payment_amt < 0:
+                        dr_cr = "Dr"; dr_amt = abs_payment_amt; cr_amt = 0
                     else:
-                        ref_1 = ref_doc
-                    
-                    # Set Ref 2 same as Ref 1 per matrix
-                    ref_2 = ref_1
-                    
-                    # Set Ref 3 to RTV per matrix
-                    ref_3 = "RTV"
+                        dr_cr = "Cr"; dr_amt = 0; cr_amt = abs_payment_amt
+
                         
-                    # Set Dr/Cr based on amount sign (opposite of typical logic per matrix)
-                    if payment_amt < 0:  # Negative amount
-                        dr_cr = "Dr"  # Is Debit per matrix
-                        dr_amt = abs_payment_amt
-                        cr_amt = 0
-                    else:  # Positive amount
-                        dr_cr = "Cr"  # Is Credit per matrix
-                        dr_amt = 0
-                        cr_amt = abs_payment_amt
-                
                 elif doc_type.lower() == "invoice payment":
                     mapped_doc_type = "Invoice"  # Per matrix: Invoice
-                    ref_invoice_no = ref_doc if ref_doc else ""
-                    ref_1 = doc_number  # Doc number from this table itself
+                    ref_invoice_no = ""  # Ref Doc column from L2 table
+                    doc_number = ref_doc
+                    ref_1 = doc_number  # Doc number from this table itself per matrix
                     
-                    # Extract Ref 2: Remove prefix before '/' in Ref Doc per matrix
-                    if ref_invoice_no and "/" in ref_invoice_no:
-                        ref_2 = ref_invoice_no.split("/")[1]  # Value after '/' in ref_invoice_no
-                    else:
-                        ref_2 = ref_invoice_no
+                    # Extract Ref 2: Value from 'Ref 1' without the prefix before '/' per matrix
+                    # Example: 'B2BOS24/22468' to '22468'
+                    if ref_1 and "/" in ref_1:
+                        ref_2 = ref_1.split("/")[1]  # Value after '/' in ref_invoice_no
                     
                     # Set Ref 3 to INV per matrix
                     ref_3 = "INV"
                     
-                    # Always set as Credit per matrix
-                    dr_cr = "Cr"  # Always Credit per matrix
+                    # Always set as Credit per matrix for Invoice Payment
+                    dr_cr = "Cr"  
                     dr_amt = 0
                     cr_amt = abs_payment_amt
-                
+                    
                 elif doc_type.lower() == "bank receipt":
                     mapped_doc_type = "Bank receipt"  # Per matrix: Bank receipt
                     ref_invoice_no = ""  # Per matrix: "-"
                     ref_1 = doc_number  # Per matrix: Doc number from this table itself
-                    account_type = "GL"  # Bank receipts are GL accounts
                     
                     # Set Ref 2 same as Ref 1 per matrix
                     ref_2 = ref_1
@@ -590,6 +589,7 @@ class ZeptoGroupProcessor(GroupProcessor):
                 logger.info(f"Created OP table entry: {line_entry}")
                 
             # Add TDS entry if TDS amounts exist
+            # From matrix: "Sum (all amounts in TDS columns against type of document 'Invoice Payment') - Sum (all the amounts in TDS columns against other than 'Invoice payment')"
             tds_net = tds_invoice_payment_total - tds_other_total
             if tds_net != 0:
                 # Per matrix: TDS special handling
