@@ -15,10 +15,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from openai import OpenAI
+from openai.types.beta.threads.message_create_params import Attachment, AttachmentToolFileSearch
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 
-from src.external_apis.llm.config import PROMPT_MAP, DEFAULT_MODEL
+from src.external_apis.llm.config import DEFAULT_MODEL
+from src.external_apis.llm.group_factory import GroupProcessorFactory
 from src.repositories.firestore_dao import FirestoreDAO
 
 logger = logging.getLogger(__name__)
@@ -56,8 +58,12 @@ class LLMExtractor:
             self.api_key = openai_api_key
             
         # Create a new OpenAI client with the API key
-        self.openai_client = OpenAI(api_key=self.api_key)
-        logger.info(f"Created OpenAI client with API key prefix: {key_prefix}")
+        self.client = OpenAI(api_key=self.api_key)
+        
+        self.dao = dao
+        
+        # Initialize the group processor factory
+        self.group_processor_factory = GroupProcessorFactory()
         
         self.model = os.environ.get('OPENAI_MODEL', 'gpt-4.1')  # Default to gpt-4.1 if not specified
         
@@ -158,7 +164,7 @@ class LLMExtractor:
             logger.info(f"Calling {self.model} with document text")
             try:
                 # Add timeout to prevent hanging indefinitely
-                response = self.openai_client.chat.completions.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": prompt_template["template"]},
@@ -189,9 +195,8 @@ class LLMExtractor:
             if "group_uuid" in detected_legal_entity:
                 group_uuid = detected_legal_entity["group_uuid"]
         
-        # Apply any group-specific post-processing
-        if group_uuid == "group-amazon-12345" or self._detect_amazon_format(processed_output):
-            processed_output = self._post_process_amazon_output(processed_output)
+        # Apply group-specific post-processing using the factory pattern
+        processed_output = self._post_process_group_output(processed_output, group_uuid)
             
         return processed_output
             
@@ -215,68 +220,226 @@ class LLMExtractor:
                 
             logger.info(f"Processing PDF file: {pdf_path}")
             
-            # Import PyPDF2 here to avoid circular imports
-            try:
-                import PyPDF2
-            except ImportError:
-                logger.warning("PyPDF2 not installed. Installing now...")
-                import subprocess
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
-                import PyPDF2
+            # Check if USE_ASSISTANTS_API flag is set to use the new Assistants API approach
+            use_assistants_api = os.environ.get("USE_ASSISTANTS_API", "False").lower() == "true"
             
-            # Extract text from PDF
-            logger.info("Extracting text from PDF...")
-            pdf_text = ""
-            with open(pdf_path, "rb") as pdf_file:
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    pdf_text += page.extract_text() + "\n\n"
+            if use_assistants_api:
+                logger.info("Using OpenAI Assistants API for PDF processing")
+                output = await self._process_pdf_with_assistants_api(pdf_path, prompt, email_body)
+            else:
+                logger.info("Using standard text extraction and API for PDF processing")
+                # Use the traditional text extraction method
+                # Import PyPDF2 here to avoid circular imports
+                try:
+                    import PyPDF2
+                except ImportError:
+                    logger.warning("PyPDF2 not installed. Installing now...")
+                    import subprocess
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
+                    import PyPDF2
+                
+                # Extract text from PDF
+                logger.info("Extracting text from PDF...")
+                pdf_text = ""
+                with open(pdf_path, "rb") as pdf_file:
+                    pdf_reader = PyPDF2.PdfReader(pdf_file)
+                    for page_num in range(len(pdf_reader.pages)):
+                        page = pdf_reader.pages[page_num]
+                        pdf_text += page.extract_text() + "\n\n"
+                
+                logger.info(f"Extracted {len(pdf_text)} characters from PDF")
+                
+                # Prepare the message content and prompt
+                extraction_prompt = f"{prompt}\n\nExtract the payment advice data from the following text (extracted from PDF) in JSON format. Include invoice details, settlement information, and any other relevant data.\n\nPDF TEXT:\n{pdf_text}"
+                
+                # Add email body if provided
+                if email_body:
+                    extraction_prompt += f"\n\nAdditional context from email body:\n{email_body}"
+                
+                # Make the API call with the text
+                logger.info(f"Calling {self.model} with extracted PDF text")
+                
+                # Call the API using chat completions with text only
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": extraction_prompt
+                        }
+                    ],
+                    max_tokens=4000  # Ensure we have enough tokens for the full response
+                )
+                
+                # Get the text response
+                response_content = response.choices[0].message.content
+                logger.info(f"Got response with {len(response_content)} chars")
+                
+                # Print raw LLM output for debugging
+                print(f"\n\n=== RAW LLM OUTPUT ===\n{response_content}\n=========================\n\n")
+                logger.info(f"Raw LLM output: {response_content}")
+                
+                # Extract JSON from response
+                output = self._extract_json_from_response(response_content)
             
-            logger.info(f"Extracted {len(pdf_text)} characters from PDF")
-            
-            # Prepare the message content and prompt
-            extraction_prompt = f"{prompt}\n\nExtract the payment advice data from the following text (extracted from PDF) in JSON format. Include invoice details, settlement information, and any other relevant data.\n\nPDF TEXT:\n{pdf_text}"
-            
-            # Add email body if provided
-            if email_body:
-                extraction_prompt += f"\n\nAdditional context from email body:\n{email_body}"
-            
-            # Make the API call with the text
-            logger.info(f"Calling {self.model} with extracted PDF text")
-            
-            # Call the API using chat completions with text only
-            response = self.openai_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": extraction_prompt
-                    }
-                ],
-                max_tokens=4000  # Ensure we have enough tokens for the full response
-            )
-            
-            # Get the text response
-            response_content = response.choices[0].message.content
-            logger.info(f"Got response with {len(response_content)} chars")
-            
-            # Extract JSON from response
-            output = self._extract_json_from_response(response_content)
-            
-            # Post-process output for Amazon group if applicable
-            if group_uuid == "group-amazon-12345" or self._detect_amazon_format(output):
-                output = self._post_process_amazon_output(output)
+            # Post-process output using the factory pattern
+            output = self._post_process_group_output(output, group_uuid)
                 
             return output
             
         except Exception as e:
             logger.error(f"Error processing PDF file with OpenAI API: {str(e)}")
             raise
+            
+    async def _process_pdf_with_assistants_api(self, pdf_path: str, prompt: str, email_body: str = None) -> Dict[str, Any]:
+        """
+        Process a PDF file using OpenAI's Assistants API with direct PDF handling.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            prompt: Prompt to use for extraction
+            email_body: Optional email body text
+            
+        Returns:
+            Extracted JSON data from the PDF
+        """
+        try:
+            logger.info(f"Processing PDF with Assistants API: {pdf_path}")
+            
+            # 1. Get or create an assistant
+            assistant = await self._get_or_create_assistant()
+            logger.info(f"Using assistant: {assistant.id}")
+            
+            # 2. Upload the PDF file to OpenAI API
+            with open(pdf_path, "rb") as pdf_file:
+                file = self.client.files.create(
+                    file=pdf_file,
+                    purpose="assistants"
+                )
+            logger.info(f"Uploaded file: {file.id}")
+            
+            # 3. Create a thread
+            thread = self.client.beta.threads.create()
+            logger.info(f"Created thread: {thread.id}")
+            
+            # 4. Add a message to the thread with PDF attachment and prompt
+            final_prompt = prompt
+            if email_body:
+                final_prompt += f"\n\nAdditional context from email body:\n{email_body}"
+                
+            final_prompt += "\n\nFormat your response as valid JSON. Ensure all fields are properly extracted and formatted."
+            
+            # Create a message with the PDF attachment
+            message = self.client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=final_prompt,
+                attachments=[
+                    Attachment(
+                        file_id=file.id,
+                        tools=[AttachmentToolFileSearch(type="file_search")]
+                    )
+                ]
+            )
+            logger.info(f"Added message with PDF attachment to thread")
+            
+            # 5. Run the thread with the assistant and wait for completion
+            run = self.client.beta.threads.runs.create_and_poll(
+                thread_id=thread.id,
+                assistant_id=assistant.id,
+                timeout=600  # 10 minutes timeout
+            )
+            
+            if run.status != "completed":
+                logger.error(f"Run failed with status: {run.status}")
+                raise Exception(f"Assistant API run failed: {run.status}")
+                
+            logger.info(f"Run completed successfully")
+            
+            # 6. Get the assistant's response
+            messages_cursor = self.client.beta.threads.messages.list(
+                thread_id=thread.id
+            )
+            messages = [message for message in messages_cursor]
+            
+            # First message is the assistant's response
+            response_message = messages[0]
+            
+            # Check if the message has text content
+            if response_message.content and len(response_message.content) > 0:
+                response_content = response_message.content[0].text.value
+                
+                # Print raw output from Assistants API for debugging
+                print(f"\n\n=== RAW ASSISTANTS API OUTPUT ===\n{response_content}\n=========================\n\n")
+                logger.info(f"Got Assistants API response with {len(response_content)} chars")
+                
+                # Extract JSON from the response
+                output = self._extract_json_from_response(response_content)
+            else:
+                logger.error("No content returned from Assistants API")
+                output = self._create_default_empty_structure()
+            
+            # 7. Clean up by deleting the uploaded file
+            try:
+                delete_ok = self.client.files.delete(file.id)
+                logger.info(f"Deleted file: {file.id}, success: {delete_ok}")
+            except Exception as e:
+                logger.warning(f"Error deleting file {file.id}: {e}")
+            
+            return output
+            
+        except Exception as e:
+            logger.error(f"Error processing PDF with Assistants API: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Return empty default structure in case of error
+            return self._create_default_empty_structure()
+            
+    async def _get_or_create_assistant(self):
+        """
+        Get or create an assistant for PDF processing.
+        
+        Returns:
+            Assistant object
+        """
+        assistant_name = "Zepto Payment Advice Processor"
+        
+        # List assistants to check if ours exists
+        assistants = self.client.beta.assistants.list(limit=100)
+        
+        for assistant in assistants.data:
+            if assistant.name == assistant_name:
+                logger.info(f"Found existing assistant: {assistant.id}")
+                return assistant
+        
+        # Create a new assistant if not found
+        logger.info("Creating new assistant for PDF processing")
+        assistant = self.client.beta.assistants.create(
+            model="gpt-4o",  # Using GPT-4o which has good PDF understanding
+            name=assistant_name,
+            description="Extracts structured data from payment advice PDFs",
+            instructions="""You are a specialized assistant for extracting financial data from payment advice PDFs.
+            You extract information in a structured JSON format. Be precise with numbers, dates, and references.
+            For Zepto payment advices, pay special attention to separate reference numbers and amounts properly.
+            Always extract both the Meta Table with payment advice metadata and Body Table with line items.
+            
+            Meta Table should include: Settlement Date, Payment Advice Number, Payer's Name, and Payee's Legal Name.
+            Body Table should contain all transaction entries with their details like Doc No, Type of Document,
+            Ref Doc, Amount, etc., maintaining the exact structure as shown in the PDF.
+            
+            IMPORTANT: Make sure reference documents (Ref Doc) are properly extracted without amounts appended to them.
+            Return only JSON data in your response.
+            """,
+            tools=[{"type": "file_search"}]
+        )
+        
+        logger.info(f"Created new assistant: {assistant.id}")
+        return assistant
     
     def _get_prompt_template(self, group_uuid: Optional[str] = None) -> Dict[str, Any]:
         """
-        Get the appropriate prompt template for a given group.
+        Get the appropriate prompt template for a given group using the factory pattern.
         
         Args:
             group_uuid: Optional group UUID
@@ -284,18 +447,31 @@ class LLMExtractor:
         Returns:
             Dictionary with prompt template information
         """
-        template_name = "default"
-        if group_uuid and group_uuid in PROMPT_MAP:
-            template_name = group_uuid
-        
-        template = PROMPT_MAP.get(template_name, PROMPT_MAP['default'])
-        prompt_preview = template[:50] + "..." if template else "[No template found]"
-        logger.info(f"Selected prompt template '{template_name}', preview: {prompt_preview}")
+        try:
+            # Get the appropriate processor for this group UUID
+            processor = self.group_processor_factory.get_processor(group_uuid)
+            template = processor.get_prompt_template()
+            template_name = processor.__class__.__name__
             
-        return {
-            "name": template_name,
-            "template": template
-        }
+            prompt_preview = template[:50] + "..." if template else "[No template found]"
+            logger.info(f"Selected prompt template from '{template_name}', preview: {prompt_preview}")
+                
+            return {
+                "name": template_name,
+                "template": template
+            }
+        except Exception as e:
+            logger.error(f"Error getting prompt template: {str(e)}")
+            # Fall back to default processor if anything goes wrong
+            processor = self.group_processor_factory.get_processor(None)
+            template = processor.get_prompt_template()
+            template_name = processor.__class__.__name__
+            
+            logger.warning(f"Falling back to default prompt template '{template_name}'")
+            return {
+                "name": template_name,
+                "template": template
+            }
     
     def _extract_text_from_pdf(self, pdf_path: str) -> str:
         """
@@ -330,7 +506,7 @@ class LLMExtractor:
     
     def _get_prompt_for_group(self, group_uuid: str) -> str:
         """
-        Get the appropriate prompt template for the given group UUID.
+        Get the appropriate prompt template for the given group UUID using factory pattern.
         
         Args:
             group_uuid: The group UUID to get a prompt for
@@ -338,12 +514,19 @@ class LLMExtractor:
         Returns:
             The prompt template to use
         """
-        if not group_uuid or group_uuid not in PROMPT_MAP:
+        try:
+            # Get the appropriate processor for this group UUID
+            processor = self.group_processor_factory.get_processor(group_uuid)
+            template = processor.get_prompt_template()
+            logger.info(f"Using group-specific prompt template for group_uuid={group_uuid} from {processor.__class__.__name__}")
+            return template
+        except Exception as e:
+            logger.warning(f"Error getting prompt for group {group_uuid}: {str(e)}")
+            # Fall back to default processor if anything goes wrong
+            processor = self.group_processor_factory.get_processor(None)
+            template = processor.get_prompt_template()
             logger.info(f"Using default prompt template (group_uuid={group_uuid})")
-            return PROMPT_MAP['default']
-            
-        logger.info(f"Using group-specific prompt template for group_uuid={group_uuid}")
-        return PROMPT_MAP[group_uuid]
+            return template
     
     def _extract_json_from_response(self, response_text: str) -> Dict[str, Any]:
         """
@@ -680,106 +863,32 @@ class LLMExtractor:
             logger.warning(f"Traceback: {traceback.format_exc()}")
             return False
         
-    def _post_process_amazon_output(self, processed_output: Dict[str, Any]) -> Dict[str, Any]:
+    def _post_process_group_output(self, processed_output: Dict[str, Any], group_uuid: str) -> Dict[str, Any]:
         """
-        Apply Amazon-specific post-processing to the LLM output.
-        
-        For Amazon payment advices, we need to ensure all invoices referenced in settlements
-        exist in the invoice table.
+        Apply group-specific post-processing to the LLM output using factory pattern.
         
         Args:
             processed_output: The LLM-processed output
+            group_uuid: The group UUID for selecting the appropriate processor
             
         Returns:
             Updated processed output
         """
         try:
-            if not processed_output or not isinstance(processed_output, dict):
-                logger.warning("Invalid processed_output in _post_process_amazon_output")
-                return processed_output or {}
-                
-            # Ensure required tables exist
-            if "invoice_table" not in processed_output:
-                processed_output["invoice_table"] = []
-                
-            if "reconciliation_statement" not in processed_output:
-                processed_output["reconciliation_statement"] = []
-                
-            # Get all invoice numbers from the invoice table
-            invoice_numbers = set()
-            for invoice in processed_output.get("invoice_table", []):
-                if isinstance(invoice, dict) and "invoice_number" in invoice:
-                    invoice_numbers.add(invoice["invoice_number"])
+            # Get the appropriate processor for this group UUID
+            processor = self.group_processor_factory.get_processor(group_uuid)
+            logger.info(f"Post-processing output with {processor.__class__.__name__}")
             
-            # Get all settlement invoice mappings
-            settlement_count = len(processed_output.get("reconciliation_statement", []))
-            invoice_count = len(processed_output.get("invoice_table", []))
+            # Apply the processor's post-processing logic
+            processed_output = processor.post_process_output(processed_output)
             
-            logger.info(f"Amazon post-processing: Before - {invoice_count} invoices, {settlement_count} settlements")
-            logger.info(f"Invoice numbers already in invoice table: {invoice_numbers}")
-            
-            # Check for invoice numbers in reconciliation that are missing in invoice table
-            reconciliation_statement = processed_output.get("reconciliation_statement", [])
-            if not isinstance(reconciliation_statement, list):
-                logger.warning("reconciliation_statement is not a list")
-                reconciliation_statement = []
+            # Always include group_uuid in output
+            if processed_output and isinstance(processed_output, dict):
+                processed_output["group_uuid"] = group_uuid
                 
-            for recon_item in reconciliation_statement:
-                if not isinstance(recon_item, dict):
-                    logger.warning(f"Invalid reconciliation item: {recon_item}")
-                    continue
-                    
-                invoice_number = recon_item.get("invoice_number")
-                if not invoice_number or invoice_number in invoice_numbers:
-                    continue
-                    
-                # This invoice number is mentioned in settlement but missing from invoice table
-                logger.info(f"Amazon post-processing: Found missing invoice {invoice_number} in reconciliation")
-                
-                # Calculate total settlement amount for this invoice number
-                settlement_amounts = []
-                total_amount = 0
-                
-                for s in reconciliation_statement:
-                    if not isinstance(s, dict):
-                        continue
-                        
-                    if s.get("invoice_number") == invoice_number and "settlement_amount" in s:
-                        try:
-                            amount = float(s["settlement_amount"]) if s["settlement_amount"] is not None else 0
-                            settlement_amounts.append(amount)
-                            total_amount += amount
-                        except (ValueError, TypeError) as e:
-                            logger.warning(f"Error parsing settlement amount: {e}")
-                
-                logger.info(f"  Found {len(settlement_amounts)} matching settlements with amounts: {settlement_amounts}")
-                logger.info(f"  Total calculated settlement amount: {total_amount}")
-                
-                # Create a new invoice entry
-                invoice_entry = {
-                    "invoice_number": invoice_number,
-                    "invoice_date": None,
-                    "booking_amount": None,
-                    "total_invoice_settlement_amount": total_amount
-                }
-                
-                # Add to the invoice table
-                if "invoice_table" not in processed_output:
-                    processed_output["invoice_table"] = []
-                    
-                processed_output["invoice_table"].append(invoice_entry)
-                invoice_numbers.add(invoice_number)  # Add to set to avoid duplicates
-                logger.info(f"Amazon post-processing: Added missing invoice {invoice_number} to invoice table with amount {total_amount}")
-            
-            # Log after post-processing counts
-            invoice_count_after = len(processed_output.get("invoice_table", []))
-            logger.info(f"Amazon post-processing: After - {invoice_count_after} invoices, {settlement_count} settlements")
-            logger.info(f"Amazon post-processing: Added {invoice_count_after - invoice_count} new invoice records")
-            
             return processed_output
-            
         except Exception as e:
-            logger.error(f"Error in _post_process_amazon_output: {str(e)}")
+            logger.error(f"Error in post-processing output with processor: {str(e)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Return the original output to avoid making the situation worse

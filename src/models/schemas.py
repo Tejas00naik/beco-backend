@@ -240,3 +240,43 @@ class SapErrorDlq(BaseModel):
     sap_response: Dict[str, Any] = field(default_factory=dict)
     retry_count: int = 0
     next_retry_ts: Optional[datetime] = None
+
+
+@dataclass
+class PaymentAdviceLine(BaseModel):
+    """Model for payment advice line items (used by Zepto group processor).
+    
+    This table stores the detailed line items from payment advices processed by the Zepto
+    group processor. Unlike the hierarchical structure used by other processors (Invoice, 
+    Settlement, OtherDoc), Zepto uses a flatter structure with all line items in a single table.
+    """
+    payment_advice_line_uuid: str = field(default_factory=lambda: str(uuid4()))
+    payment_advice_uuid: str = ""  # FK to PaymentAdvice
+    email_log_uuid: str = ""      # FK to EmailLog
+    
+    # Account information
+    bp_code: Optional[str] = None  # Business Partner code (enriched from SAP)
+    gl_code: Optional[str] = None  # GL account code
+    account_type: Optional[str] = None  # GL or BP
+    customer: Optional[str] = None  # Legal entity code/name
+    
+    # Document information
+    doc_type: Optional[str] = None  # Type of document (INV, CM, BR, etc.)
+    doc_number: Optional[str] = None  # Document number
+    ref_invoice_no: Optional[str] = None  # Reference invoice number
+    ref_1: Optional[str] = None  # Additional reference field 1
+    ref_2: Optional[str] = None  # Additional reference field 2 (often payment advice number)
+    ref_3: Optional[str] = None  # Additional reference field 3 (often payment date)
+    
+    # Amount information
+    amount: Optional[float] = None  # Transaction amount (signed)
+    dr_cr: Optional[str] = None  # Dr or Cr indicator
+    dr_amt: Optional[float] = None  # Debit amount (positive)
+    cr_amt: Optional[float] = None  # Credit amount (positive)
+    
+    # Additional information
+    branch_name: Optional[str] = None  # Branch name
+    
+    # Processing status
+    sap_enrichment_status: Optional[str] = None  # Status of SAP enrichment
+    sap_transaction_id: Optional[str] = None  # SAP transaction ID after enrichment

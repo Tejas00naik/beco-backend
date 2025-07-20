@@ -142,29 +142,64 @@ class EmailProcessor:
                         try:
                             import os
                             import tempfile
-                            import PyPDF2
+                            import fitz  # PyMuPDF
                             
-                            logger.info(f"Extracting text from PDF attachment: {attachment_filename}")
+                            logger.info(f"Extracting text from PDF attachment using PyMuPDF: {attachment_filename}")
                             
                             # Create a temporary file to save the PDF
                             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
                                 temp_file.write(attachment.get('content', b''))
                                 temp_pdf_path = temp_file.name
                             
-                            # Extract text from PDF
+                            # Extract text from PDF using PyMuPDF (fitz)
                             pdf_text = ""
+                            raw_text = ""
                             try:
-                                with open(temp_pdf_path, "rb") as pdf_file:
-                                    pdf_reader = PyPDF2.PdfReader(pdf_file)
-                                    for page_num in range(len(pdf_reader.pages)):
-                                        page = pdf_reader.pages[page_num]
-                                        pdf_text += page.extract_text() + "\n\n"
+                                # Open the PDF with PyMuPDF
+                                pdf_document = fitz.open(temp_pdf_path)
+                                
+                                # Process each page
+                                for page_num in range(len(pdf_document)):
+                                    page = pdf_document.load_page(page_num)
+                                    
+                                    # Extract text with better layout preservation
+                                    page_text = page.get_text("text")
+                                    pdf_text += page_text + "\n\n"
+                                    
+                                    # Also store raw text version for debugging
+                                    raw_text += page.get_text("rawdict") + "\n\n"
+                                
+                                # Close the document
+                                pdf_document.close()
                                 
                                 logger.info(f"Extracted {len(pdf_text)} characters from PDF attachment")
                                 # Add extracted text to attachment data
                                 attachment['text_content'] = pdf_text
+                                attachment['raw_text_content'] = raw_text
+                                
+                                # Log sample of extracted text for debugging
+                                text_preview = pdf_text[:500] + '...' if len(pdf_text) > 500 else pdf_text
+                                logger.info(f"PDF Text Preview:\n{text_preview}")
+                                
                             except Exception as pdf_err:
-                                logger.error(f"Error extracting text from PDF: {str(pdf_err)}")
+                                logger.error(f"Error extracting text from PDF using PyMuPDF: {str(pdf_err)}")
+                                # Fallback to simple text extraction if PyMuPDF fails
+                                try:
+                                    import PyPDF2
+                                    logger.info("Falling back to PyPDF2 for text extraction")
+                                    with open(temp_pdf_path, "rb") as pdf_file:
+                                        pdf_reader = PyPDF2.PdfReader(pdf_file)
+                                        fallback_text = ""
+                                        for page_num in range(len(pdf_reader.pages)):
+                                            page = pdf_reader.pages[page_num]
+                                            fallback_text += page.extract_text() + "\n\n"
+                                    
+                                    logger.info(f"Extracted {len(fallback_text)} characters using PyPDF2 fallback")
+                                    # Add extracted text to attachment data
+                                    attachment['text_content'] = fallback_text
+                                    attachment['extraction_method'] = 'PyPDF2_fallback'
+                                except Exception as fallback_err:
+                                    logger.error(f"Fallback extraction also failed: {str(fallback_err)}")
                             finally:
                                 # Clean up the temporary file
                                 try:
@@ -172,10 +207,10 @@ class EmailProcessor:
                                 except:
                                     pass
                         except ImportError:
-                            logger.warning("PyPDF2 not installed. Installing now...")
+                            logger.warning("PyMuPDF not installed. Installing now...")
                             import subprocess
                             import sys
-                            subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
+                            subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf"])
                             logger.warning("Failed to extract text from PDF attachment due to missing dependencies")
                     
                     # Extract text content from attachment if needed (e.g., PDF)

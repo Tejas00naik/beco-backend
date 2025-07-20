@@ -50,3 +50,6 @@ mock_data/processed_emails.json
 # OS specific
 .DS_Store
 Thumbs.db
+
+# Output directory for logs and temporary files
+output/
