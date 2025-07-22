@@ -34,3 +34,9 @@ ATTACHMENT_PREFIX = "attachment_"  # Prefix for attachment filenames
 # Account and SAP export configuration
 TDS_ACCOUNT_NAME = "TDS Account"  # Default name for TDS account
 TDS_ACCOUNT_CODE = "30-03-04-06-001"  # Default GL code for TDS account
+
+# Google Sheets configuration for monitoring dashboard
+SHEETS_CREDENTIALS_PATH = "secrets/sheets-service-account.json"
+MONITORING_SHEET_ID = "1dhE6OCIBdoF5BrTGF1zHdEN2ReqXcC0OwdjTJefi8UI"
+MONITORING_SHEET_RANGE = "A:J"  # Range to use for the monitoring sheet
+SAP_EXPORT_BUCKET = "beco-exported-files"  # GCS bucket for SAP exports

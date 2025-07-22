@@ -420,3 +420,71 @@ class FirestoreDAO:
         except Exception as e:
             logger.error(f"Error looking up customer by email {email_address}: {str(e)}")
             raise
+            
+    async def get_email_logs(self, limit: int = 100, days_ago: int = None) -> List[Dict[str, Any]]:
+        """
+        Get recent email logs, optionally filtered by age.
+        
+        Args:
+            limit: Maximum number of logs to retrieve
+            days_ago: If provided, only get logs from the last X days
+            
+        Returns:
+            List of email log dictionaries
+        """
+        try:
+            filters = []
+            
+            if days_ago is not None:
+                # Calculate the cutoff date
+                cutoff_date = datetime.now() - timedelta(days=days_ago)
+                filters.append(("received_at", ">", cutoff_date))
+            
+            # Get the email logs sorted by received_at in descending order
+            logs = await self.query_documents(
+                "email_log", 
+                filters=filters,
+                order_by="received_at", 
+                limit=limit,
+                desc=True  # Most recent first
+            )
+            
+            return logs
+        except Exception as e:
+            logger.error(f"Error getting email logs: {str(e)}")
+            return []
+    
+    async def get_email_log(self, email_log_uuid: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific email log by UUID.
+        
+        Args:
+            email_log_uuid: The UUID of the email log
+            
+        Returns:
+            Email log dictionary or None if not found
+        """
+        try:
+            return await self.get_document("email_log", email_log_uuid)
+        except Exception as e:
+            logger.error(f"Error getting email log {email_log_uuid}: {str(e)}")
+            return None
+    
+    async def get_payment_advices_by_email_log(self, email_log_uuid: str) -> List[Dict[str, Any]]:
+        """
+        Get all payment advices associated with an email log.
+        
+        Args:
+            email_log_uuid: Email log UUID
+            
+        Returns:
+            List of payment advice dictionaries
+        """
+        try:
+            return await self.query_documents(
+                "payment_advice",
+                filters=[("email_log_uuid", "==", email_log_uuid)]
+            )
+        except Exception as e:
+            logger.error(f"Error getting payment advices for email log {email_log_uuid}: {str(e)}")
+            return []

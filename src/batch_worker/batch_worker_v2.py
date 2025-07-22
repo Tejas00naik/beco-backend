@@ -35,6 +35,7 @@ from src.services.email.email_processor import EmailProcessor
 from src.services.payment_processing_service import PaymentProcessingService
 from src.services.sap_export_service import SAPExportService
 from src.services.account_enrichment_service import AccountEnrichmentService
+from src.services.monitoring_service import MonitoringService
 from src.mocks.email_reader import MockEmailReader
 
 # Import repositories
@@ -137,12 +138,15 @@ class BatchWorkerV2:
         logger.info("Using LLMExtractionService with OpenAI API (GPT-4.1)")
         
         # Initialize SAP export service
-        self.sap_export_service = SAPExportService(dao=self.dao)
+        self.sap_export_service = SAPExportService(dao=self.dao, gcs_uploader=self.gcs_uploader)
         
-        # Initialize account enrichment service
+        # Initialize Account Enrichment Service
         self.account_enrichment_service = AccountEnrichmentService(dao=self.dao)
         
-        # Initialize payment processing service (modified version needed for V2)
+        # Initialize Monitoring Service
+        self.monitoring_service = MonitoringService(dao=self.dao)
+        
+        # Initialize the payment processing service
         self.payment_service = PaymentProcessingService(
             self.payment_advice_repo,
             None,  # No invoice repo for V2
@@ -334,11 +338,7 @@ class BatchWorkerV2:
                 # Enrich payment advice lines with BP/GL codes first
                 try:
                     logger.info(f"Enriching payment advice lines with BP/GL codes for {payment_advice_uuid}")
-                    success = await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
-                    if success:
-                        logger.info(f"Successfully enriched payment advice lines for {payment_advice_uuid}")
-                    else:
-                        logger.warning(f"Failed to enrich payment advice lines for {payment_advice_uuid}")
+                    await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
                 except Exception as enrich_error:
                     logger.error(f"Error enriching payment advice lines: {str(enrich_error)}")
                     import traceback
@@ -502,6 +502,8 @@ class BatchWorkerV2:
                 success = await self.process_email(email_data)
                 if success:
                     processed_email_ids.append(email_data["email_id"])
+                    # Update monitoring sheet after successful processing
+                    await self.monitoring_service.update_after_batch_processing(email_data["email_log_uuid"])
             
             # Mark emails as processed in the reader
             if processed_email_ids and hasattr(self.email_reader, 'mark_as_processed'):
