@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from src.external_apis.gcp.sheets_service import SheetsService
-from src.data_access.firestore_dao import FirestoreDAO
+from src.repositories.firestore_dao import FirestoreDAO
 
 logger = logging.getLogger(__name__)
 
