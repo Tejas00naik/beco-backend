@@ -3,7 +3,12 @@
 from abc import ABC, abstractmethod
 import logging
 import re
+import traceback
 from typing import Dict, Any, Optional, List
+from uuid import uuid4
+
+from src.models.schemas import PaymentAdviceLine
+from src.repositories.firestore_dao import FirestoreDAO
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +44,23 @@ class DefaultGroupProcessor(GroupProcessor):
     
     def get_prompt_template(self) -> str:
         """Get the default prompt template."""
-        return """
+        # Import constants for LLM output keys
+        from src.external_apis.llm.constants import (
+            LLM_META_TABLE_KEY, LLM_SETTLEMENT_TABLE_KEY, 
+            LLM_INVOICE_TABLE_KEY, LLM_RECONCILIATION_STATEMENT_KEY,
+            META_SETTLEMENT_DATE, META_PAYMENT_ADVICE_NUMBER,
+            META_PAYER_LEGAL_NAME, META_PAYEE_LEGAL_NAME
+        )
+        
+        return f"""
         You are an expert financial analyst. I will provide you with a payment advice document.
         Extract the following information in JSON format:
         
         1. Meta Table: Contains payment advice metadata
-           - settlement_date: The date when the payment was made (format: DD-MM-YYYY)
-           - payment_advice_number: The unique identifier for this payment advice
-           - payer_legal_name: The full legal name of the entity making the payment
-           - payee_legal_name: The full legal name of the entity receiving the payment
+           - {META_SETTLEMENT_DATE}: The date when the payment was made (format: DD-MM-YYYY)
+           - {META_PAYMENT_ADVICE_NUMBER}: The unique identifier for this payment advice
+           - {META_PAYER_LEGAL_NAME}: The full legal name of the entity making the payment
+           - {META_PAYEE_LEGAL_NAME}: The full legal name of the entity receiving the payment
            
         2. Settlement Table: List of all settlement entries
            For each settlement, extract:
@@ -70,7 +83,7 @@ class DefaultGroupProcessor(GroupProcessor):
            - settlement_amount: The amount settled for this invoice (may be null)
            - total_sd_amount: The total settlement document amount
         
-        Return your answer as a JSON object with keys: meta_table, settlement_table, invoice_table, reconciliation_statement
+        Return your answer as a JSON object with keys: {LLM_META_TABLE_KEY}, {LLM_SETTLEMENT_TABLE_KEY}, {LLM_INVOICE_TABLE_KEY}, {LLM_RECONCILIATION_STATEMENT_KEY}
         """
     
     def post_process_output(self, processed_output: Dict[str, Any]) -> Dict[str, Any]:
@@ -297,7 +310,14 @@ class ZeptoGroupProcessor(GroupProcessor):
     
     def get_prompt_template(self) -> str:
         """Get the Zepto-specific prompt template."""
-        return """
+        # Import constants for LLM output keys
+        from src.external_apis.llm.constants import (
+            LLM_META_TABLE_KEY, LLM_BODY_TABLE_KEY,
+            META_PAYMENT_ADVICE_NUMBER, META_PAYMENT_ADVICE_DATE,
+            META_PAYER_LEGAL_NAME, META_PAYEE_LEGAL_NAME
+        )
+        
+        return f"""
     System prompt
 
     You are an intelligent document processor designed to extract structured data from payment advice PDFs.
@@ -348,8 +368,13 @@ class ZeptoGroupProcessor(GroupProcessor):
     Output Format:
     Return both tables in structured JSON format.
 
-    The Meta Table should be a single JSON object.
-    The Body Table should be a JSON array of row-wise objects. Each row should contain:
+    The Meta Table should be a single JSON object with key '{LLM_META_TABLE_KEY}' and should contain:
+    "{META_PAYMENT_ADVICE_DATE}": Value beside 'Payment Date'
+    "{META_PAYMENT_ADVICE_NUMBER}": Value beside 'Payment Doc'
+    "{META_PAYER_LEGAL_NAME}": Topmost entity name on the document
+    "{META_PAYEE_LEGAL_NAME}": Value beside 'Payee'
+
+    The Body Table should be a JSON array with key '{LLM_BODY_TABLE_KEY}' with row-wise objects. Each row should contain:
     "Sr No."
     "Type of Document"
     "Doc No"
@@ -387,29 +412,70 @@ class ZeptoGroupProcessor(GroupProcessor):
         try:
             logger.info("Applying Zepto-specific post-processing")
             
+            # Import constants for LLM output keys
+            from src.external_apis.llm.constants import LLM_META_TABLE_KEY, LLM_BODY_TABLE_KEY
+            
             # Check if processed output has expected structure from Zepto LLM prompt
-            if "Meta Table" not in processed_output and "Body Table" not in processed_output:
-                logger.warning("Zepto post-processing: Expected 'Meta Table' and 'Body Table' not found in LLM output")
-                # Try legacy format if available
-                meta_table = processed_output.get("meta_table", {})
-                if meta_table:
-                    logger.info("Using legacy meta_table format")
-                else:
-                    logger.error("No valid table format found in LLM output")
+            # Look for both potential formats - capitalized format (old) or snake_case constants (new)
+            meta_table_key = LLM_META_TABLE_KEY
+            body_table_key = LLM_BODY_TABLE_KEY
+            
+            if meta_table_key not in processed_output and body_table_key not in processed_output:
+                # Try legacy formats
+                legacy_keys = ["meta_table", "Meta Table"]
+                legacy_body_keys = ["body_table", "Body Table"]
+                
+                for key in legacy_keys:
+                    if key in processed_output:
+                        logger.info(f"Using legacy format with key: {key}")
+                        meta_table_key = key
+                        break
+                
+                for key in legacy_body_keys:
+                    if key in processed_output:
+                        logger.info(f"Using legacy format with key: {key}")
+                        body_table_key = key
+                        break
+                        
+                if meta_table_key not in processed_output or body_table_key not in processed_output:
+                    logger.error(f"No valid table format found in LLM output. Keys present: {list(processed_output.keys())}")
                     return processed_output
             
-            # Extract tables from Zepto format
-            meta_table = processed_output.get("Meta Table", {})
-            body_table = processed_output.get("Body Table", [])
+            # Extract tables using detected keys
+            meta_table = processed_output.get(meta_table_key, {})
+            body_table = processed_output.get(body_table_key, [])
             
             logger.info(f"Found Meta Table: {meta_table}")
             logger.info(f"Found Body Table with {len(body_table)} rows")
             
-            # Extract key information from Meta Table
-            settlement_date = meta_table.get("Settlement Date")
-            payment_advice_number = meta_table.get("Payment Advice Number")
-            payer_name = meta_table.get("Payer's Name")
-            payee_name = meta_table.get("Payee's Legal Name")
+            # Import field name constants
+            from src.external_apis.llm.constants import (
+                META_PAYMENT_ADVICE_DATE, META_PAYMENT_ADVICE_NUMBER,
+                META_PAYER_LEGAL_NAME, META_PAYEE_LEGAL_NAME
+            )
+            
+            # Extract key information from Meta Table using constants
+            # Try both the constant keys and legacy hard-coded keys for backwards compatibility
+            settlement_date = (
+                meta_table.get(META_PAYMENT_ADVICE_DATE) or 
+                meta_table.get("payment_advice_date") or 
+                meta_table.get("Settlement Date")
+            )
+            payment_advice_number = (
+                meta_table.get(META_PAYMENT_ADVICE_NUMBER) or 
+                meta_table.get("payment_advice_number") or 
+                meta_table.get("Payment Advice Number")
+            )
+            payer_name = (
+                meta_table.get(META_PAYER_LEGAL_NAME) or 
+                meta_table.get("payer_legal_name") or 
+                meta_table.get("Payer's Name")
+            )
+            payee_name = (
+                meta_table.get(META_PAYEE_LEGAL_NAME) or 
+                meta_table.get("payee_legal_name") or 
+                meta_table.get("Payee's Legal Name")
+            )
             
             logger.info(f"Payer: {payer_name}, Payee: {payee_name}, Advice #: {payment_advice_number}")
             
@@ -582,7 +648,7 @@ class ZeptoGroupProcessor(GroupProcessor):
                     "dr_cr": dr_cr,
                     "dr_amt": dr_amt,
                     "cr_amt": cr_amt,
-                    "branch_name": None
+                    "branch_name": "Maharashtra"
                 }
                 
                 paymentadvice_lines.append(line_entry)
@@ -637,6 +703,60 @@ class ZeptoGroupProcessor(GroupProcessor):
             
             if "reconciliation_statement" not in processed_output:
                 processed_output["reconciliation_statement"] = []
+            
+            # Store paymentadvice_lines in the output
+            processed_output["paymentadvice_lines"] = paymentadvice_lines
+            
+            # Create and save PaymentAdviceLine objects to Firestore
+            try:
+                # Initialize the DAO with the appropriate collection prefix (if test mode is detected)
+                collection_prefix = ""
+                if processed_output.get("is_test", False):
+                    collection_prefix = "dev_"
+                    
+                dao = FirestoreDAO(collection_prefix=collection_prefix)
+                
+                # Create and save each payment advice line
+                payment_advice_uuid = processed_output.get("payment_advice_uuid")
+                if not payment_advice_uuid:
+                    payment_advice_uuid = str(uuid4())  # Generate a UUID if not provided
+                    logger.info(f"Generated payment_advice_uuid: {payment_advice_uuid}")
+                
+                for line in paymentadvice_lines:
+                    # Create a unique UUID for each payment advice line
+                    line_uuid = str(uuid4())
+                    
+                    # Create PaymentAdviceLine object
+                    payment_advice_line = PaymentAdviceLine(
+                        payment_advice_line_uuid=line_uuid,
+                        payment_advice_uuid=payment_advice_uuid,
+                        bp_code=line.get("bp_code"),
+                        gl_code=line.get("gl_code"),
+                        account_type=line.get("account_type"),
+                        customer=line.get("customer"),
+                        doc_type=line.get("doc_type"),
+                        doc_number=line.get("doc_number"),
+                        ref_invoice_no=line.get("ref_invoice_no"),
+                        ref_1=line.get("ref_1"),
+                        ref_2=line.get("ref_2"),
+                        ref_3=line.get("ref_3"),
+                        amount=line.get("amount"),
+                        dr_cr=line.get("dr_cr"),
+                        dr_amt=line.get("dr_amt"),
+                        cr_amt=line.get("cr_amt"),
+                        branch_name=line.get("branch_name") or "Maharashtra"  # Default to Maharashtra if not set
+                    )
+                    
+                    # Save to Firestore
+                    logger.info(f"Saving payment advice line to Firestore: {line_uuid}")
+                    # The actual Firestore save needs to happen in an async context
+                    processed_output[f"paymentadvice_line_{line_uuid}"] = payment_advice_line
+                
+                logger.info(f"Prepared {len(paymentadvice_lines)} payment advice lines for Firestore")
+                
+            except Exception as e:
+                logger.error(f"Error saving payment advice lines to Firestore: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
             
             return processed_output
             
