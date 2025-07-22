@@ -7,30 +7,41 @@ and maps them to a single paymentadvice_lines table in Firestore.
 
 import logging
 import os
-import uuid
-import asyncio
 import json
+import traceback
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional, Literal
-
-# Import models
-from src.repositories.firestore_dao import FirestoreDAO
-from src.models.schemas import BatchRunStatus
-
-# Import components
-from src.batch_worker.batch_manager import BatchManager
-from src.services.email.email_processor import EmailProcessor
-from src.services.payment_processing_service import PaymentProcessingService
-from src.services.llm_extraction_service import LLMExtractionService
-from src.external_apis.sap.sap_integration import SapIntegrator
-import src.batch_worker.helpers as helpers
+from typing import Dict, Any, Optional, List, Literal
+import asyncio
+from uuid import uuid4
+from enum import Enum
 
 # Import configuration
 from src.config import (
-    TARGET_MAILBOX_ID,
     DEFAULT_FETCH_DAYS,
     DEFAULT_GMAIL_CREDENTIALS_PATH,
     DEFAULT_GCS_BUCKET_NAME
+)
+
+# Import models
+from src.models.schemas import PaymentAdviceLine, PaymentAdvice, PaymentAdviceStatus
+
+# Import components
+from src.batch_worker.batch_manager import BatchManager, BatchRunStatus
+from src.repositories.firestore_dao import FirestoreDAO
+from src.external_apis.gcp.gcs_uploader import GCSUploader
+from src.services.llm_extraction_service import LLMExtractionService
+from src.external_apis.gcp.gmail_reader import GmailReader, GMAIL_AVAILABLE
+from src.services.email.email_processor import EmailProcessor
+from src.services.payment_processing_service import PaymentProcessingService
+from src.mocks.email_reader import MockEmailReader
+
+# Import repositories
+from src.repositories import (
+    LegalEntityRepository, 
+    PaymentAdviceRepository, 
+    InvoiceRepository, 
+    OtherDocRepository, 
+    SettlementRepository
 )
 
 # Zepto group UUID - will be dynamically looked up from Firestore using legal entity name
@@ -105,9 +116,20 @@ class BatchWorkerV2:
             PaymentAdviceRepository
         )
         
-        # Initialize repositories (no invoice, settlement, or other doc repos needed for V2)
+        # Initialize repositories (all repos needed for payment_advice creation)
         self.legal_entity_repo = LegalEntityRepository(self.dao)
         self.payment_advice_repo = PaymentAdviceRepository(self.dao)
+        self.invoice_repo = InvoiceRepository(self.dao)
+        self.other_doc_repo = OtherDocRepository(self.dao)
+        self.settlement_repo = SettlementRepository(self.dao)
+        
+        # Initialize payment service for creating payment_advice entries
+        self.payment_service = PaymentProcessingService(
+            payment_advice_repo=self.payment_advice_repo,
+            invoice_repo=self.invoice_repo,
+            other_doc_repo=self.other_doc_repo,
+            settlement_repo=self.settlement_repo
+        )
         
         # Initialize LLM extraction service
         if not os.environ.get("OPENAI_API_KEY"):
@@ -127,9 +149,7 @@ class BatchWorkerV2:
         from src.services.legal_entity_lookup import LegalEntityLookupService
         self.legal_entity_lookup = LegalEntityLookupService(self.dao)
         
-        # Initialize SAP client for SAP B1 integration
-        from src.mocks.sap_client import MockSapClient
-        self.sap_client = MockSapClient()
+        # SAP integration removed per user request - not needed in BatchWorkerV2
         
         # Initialize batch manager
         self.batch_manager = BatchManager(
@@ -139,12 +159,8 @@ class BatchWorkerV2:
             run_mode=self.run_mode
         )
         
-        # Initialize SAP integrator
-        self.sap_integrator = SapIntegrator(self.dao)
-        self.sap_integrator.sap_client = self.sap_client  # Ensure SAP integrator uses our mock client
-        
-        # Initialize email processor
-        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_service, self.sap_integrator)
+        # Initialize EmailProcessor with dependencies
+        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_service)
         
         # Initialize counters
         self.emails_processed = 0
@@ -161,6 +177,26 @@ class BatchWorkerV2:
     async def finish_batch_run(self):
         """Finish the current batch run."""
         await self.batch_manager.finish_batch_run()
+        
+    async def create_payment_advice_from_llm_output(self, llm_output: Dict[str, Any], email_log_uuid: str) -> Optional[str]:
+        """Create payment advice from LLM output using the payment service."""
+        try:
+            # Import constants for LLM output keys
+            from src.external_apis.llm.constants import LLM_LEGAL_ENTITY_UUID_KEY, LLM_GROUP_UUIDS_KEY
+            
+            # Use payment service to process LLM output with correct parameter order
+            payment_advice_uuid = await self.payment_service.create_payment_advice(
+                email_log_uuid=email_log_uuid,
+                legal_entity_uuid=llm_output.get(LLM_LEGAL_ENTITY_UUID_KEY),
+                group_uuids=llm_output.get(LLM_GROUP_UUIDS_KEY, []),
+                llm_output=llm_output
+            )
+            logger.info(f"Created payment advice {payment_advice_uuid} from LLM output for email {email_log_uuid}")
+            return payment_advice_uuid
+        except Exception as e:
+            logger.error(f"Error creating payment advice from LLM output: {str(e)}")
+            logger.error(traceback.format_exc())
+            return None
     
     async def process_email(self, email_data: Dict[str, Any]):
         """Process a single email."""
@@ -190,7 +226,32 @@ class BatchWorkerV2:
             
             # Print the raw LLM output
             logger.info(f"LLM OUTPUT FOR EMAIL: {llm_output}")
-            print(f"\n\n=== LLM OUTPUT FOR EMAIL ===\n{json.dumps(llm_output, indent=2)}\n===========================\n\n")
+            
+            # Create a serializable copy of llm_output (without PaymentAdviceLine objects)
+            def make_serializable(obj):
+                """Convert an object to a JSON serializable format."""
+                if isinstance(obj, dict):
+                    return {k: make_serializable(v) for k, v in obj.items() if not k.startswith('paymentadvice_line_')}
+                elif isinstance(obj, list):
+                    return [make_serializable(item) for item in obj]
+                elif hasattr(obj, '__dict__'):
+                    # For objects like PaymentAdviceLine, convert to dict
+                    return {"type": obj.__class__.__name__, "data": make_serializable(obj.__dict__)}
+                else:
+                    return obj
+            
+            # Create a serializable version of the output
+            serializable_output = make_serializable(llm_output)
+            
+            try:
+                print(f"\n\n=== LLM OUTPUT FOR EMAIL ===\n{json.dumps(serializable_output, indent=2)}\n===========================\n\n")
+            except TypeError as e:
+                logger.warning(f"Could not fully serialize LLM output: {e}")
+                # Fall back to a simpler representation
+                basic_output = {k: str(v) if not isinstance(v, (dict, list)) else v 
+                               for k, v in serializable_output.items() 
+                               if not k.startswith('paymentadvice_line_') and k != 'payment_advice_lines'}
+                print(f"\n\n=== LLM OUTPUT FOR EMAIL (SIMPLIFIED) ===\n{json.dumps(basic_output, indent=2)}\n===========================\n\n")
             
             # Store the processed output for testing
             self.last_processed_output = llm_output
@@ -203,6 +264,70 @@ class BatchWorkerV2:
                         logger.info(f"Stored PDF text for analysis: {len(self.last_pdf_text)} characters")
                         break
             
+            # Create payment advice in Firestore first (similar to v1)
+            payment_advice_uuid = await self.create_payment_advice_from_llm_output(llm_output, email_log_uuid)
+            
+            # Update the llm_output with the payment_advice_uuid
+            if payment_advice_uuid:
+                llm_output['payment_advice_uuid'] = payment_advice_uuid
+                logger.info(f"Added payment_advice_uuid {payment_advice_uuid} to llm_output")
+            else:
+                # If payment advice creation failed, generate a UUID for consistency
+                from uuid import uuid4
+                payment_advice_uuid = str(uuid4())
+                llm_output['payment_advice_uuid'] = payment_advice_uuid
+                logger.warning(f"Payment advice creation failed, using generated UUID: {payment_advice_uuid}")
+            
+            # Save payment advice lines to Firestore if available
+            if 'paymentadvice_lines' in llm_output and llm_output['paymentadvice_lines']:
+                payment_advice_lines = llm_output['paymentadvice_lines']
+                logger.info(f"Found {len(payment_advice_lines)} payment advice lines to save to Firestore")
+                
+                # Save each payment advice line to Firestore
+                from src.models.schemas import PaymentAdviceLine
+                saved_count = 0
+                
+                for line in payment_advice_lines:
+                    try:
+                        # Create a unique UUID for this line
+                        from uuid import uuid4
+                        line_uuid = str(uuid4())
+                        
+                        # Create PaymentAdviceLine object
+                        payment_advice_line = PaymentAdviceLine(
+                            payment_advice_line_uuid=line_uuid,
+                            payment_advice_uuid=payment_advice_uuid,
+                            bp_code=line.get("bp_code"),
+                            gl_code=line.get("gl_code"),
+                            account_type=line.get("account_type"),
+                            customer=line.get("customer"),
+                            doc_type=line.get("doc_type"),
+                            doc_number=line.get("doc_number"),
+                            ref_invoice_no=line.get("ref_invoice_no"),
+                            ref_1=line.get("ref_1"),
+                            ref_2=line.get("ref_2"),
+                            ref_3=line.get("ref_3"),
+                            amount=line.get("amount"),
+                            dr_cr=line.get("dr_cr"),
+                            dr_amt=line.get("dr_amt"),
+                            cr_amt=line.get("cr_amt"),
+                            branch_name=line.get("branch_name") or "Maharashtra"  # Default to Maharashtra if not set
+                        )
+                        
+                        # Save to Firestore
+                        await self.dao.create_payment_advice_line(payment_advice_line)
+                        saved_count += 1
+                        logger.info(f"Saved payment advice line {line_uuid} to Firestore")
+                        
+                    except Exception as line_error:
+                        logger.error(f"Error saving payment advice line to Firestore: {str(line_error)}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                
+                logger.info(f"Successfully saved {saved_count} out of {len(payment_advice_lines)} payment advice lines to Firestore")
+            else:
+                logger.warning("No payment advice lines found in LLM output")
+            
             # Update batch run stats
             self.batch_manager.increment_processed_count()
             self.emails_processed += 1
@@ -210,6 +335,8 @@ class BatchWorkerV2:
                 
         except Exception as e:
             logger.error(f"Error processing email: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             self.batch_manager.increment_error_count()
             self.errors += 1
             return False

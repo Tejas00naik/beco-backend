@@ -20,7 +20,7 @@ from src.models.schemas import (
     Group, LegalEntity, Customer, Email, Domain, CustEmailDomainMap,
     
     # Transaction Data
-    EmailLog, PaymentAdvice, Invoice, OtherDoc, Settlement,
+    EmailLog, PaymentAdvice, Invoice, OtherDoc, Settlement, PaymentAdviceLine,
     
     # Processing Metadata
     BatchRun, EmailProcessingLog, SapErrorDlq
@@ -276,6 +276,10 @@ class FirestoreDAO:
     async def create_sap_error_dlq(self, sap_error: SapErrorDlq) -> str:
         """Create a new SAP error dead letter queue entry."""
         return await self.add_document("sap_error_dlq", sap_error.dlq_id, sap_error)
+        
+    async def create_payment_advice_line(self, payment_advice_line: PaymentAdviceLine) -> str:
+        """Create a new payment advice line entry."""
+        return await self.add_document("paymentadvice_lines", payment_advice_line.payment_advice_line_uuid, payment_advice_line)
         
     async def clear_mailbox_data(self, mailbox_id: str) -> None:
         """Delete all data for a specific mailbox_id for full refresh mode.

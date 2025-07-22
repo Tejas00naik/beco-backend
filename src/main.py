@@ -29,8 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import batch worker package
+# Import batch worker packages
 from src.batch_worker import BatchWorker
+from src.batch_worker.batch_worker_v2 import BatchWorkerV2
 
 # Import configuration
 from src.config import (
@@ -50,6 +51,7 @@ async def main():
                       help=f"Path to Gmail API credentials file (default: {DEFAULT_GMAIL_CREDENTIALS_PATH})")
     parser.add_argument("--start-date", help="Start date for email fetching in YYYY-MM-DD format")
     parser.add_argument("--last-n", type=int, default=None, help="Only process the last N emails")
+    parser.add_argument("--v2", action="store_true", help="Use BatchWorkerV2 for Zepto payment advice processing")
     
     args = parser.parse_args()
     
@@ -83,15 +85,28 @@ async def main():
         os.environ["INITIAL_FETCH_START_DATE"] = args.start_date
     
     # Initialize and run the batch worker
-    worker = BatchWorker(
-        is_test=is_test,
-        mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
-        run_mode=args.mode,
-        use_gmail=args.gmail,
-        gmail_credentials_path=args.credentials,
-        since_timestamp=start_date if start_date else None,  # Pass the start date directly to BatchWorker
-        last_n_emails=args.last_n  # Limit to last N emails if specified
-    )
+    if args.v2:
+        logger.info("Using BatchWorkerV2 for Zepto payment advice processing")
+        worker = BatchWorkerV2(
+            is_test=is_test,
+            mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
+            run_mode=args.mode,
+            use_gmail=args.gmail,
+            gmail_credentials_path=args.credentials,
+            since_timestamp=start_date if start_date else None,
+            last_n_emails=args.last_n  # Limit to last N emails if specified
+        )
+    else:
+        logger.info("Using standard BatchWorker")
+        worker = BatchWorker(
+            is_test=is_test,
+            mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
+            run_mode=args.mode,
+            use_gmail=args.gmail,
+            gmail_credentials_path=args.credentials,
+            since_timestamp=start_date if start_date else None,
+            last_n_emails=args.last_n  # Limit to last N emails if specified
+        )
     
     logger.info(f"Using hardcoded mailbox ID: {TARGET_MAILBOX_ID}")
     await worker.run()

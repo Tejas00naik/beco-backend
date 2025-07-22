@@ -65,31 +65,41 @@ class PaymentProcessingService:
             # Create payment advice
             payment_advice_uuid = str(uuid4())
             
-            # Extract meta fields from the LLM output
-            # Check both camelCase and snake_case keys for metaTable/meta_table compatibility
-            meta_table = llm_output.get('metaTable', llm_output.get('meta_table', {}))
+            # Import constants for LLM output keys
+            from src.external_apis.llm.constants import (
+                LLM_META_TABLE_KEY, LLM_META_TABLE_KEY_CAMEL,
+                META_PAYMENT_ADVICE_NUMBER, META_PAYMENT_ADVICE_NUMBER_CAMEL,
+                META_PAYMENT_ADVICE_DATE, META_PAYMENT_ADVICE_DATE_CAMEL, META_SETTLEMENT_DATE,
+                META_PAYMENT_ADVICE_AMOUNT, META_PAYMENT_ADVICE_AMOUNT_CAMEL, META_PAYMENT_AMOUNT,
+                META_PAYER_NAME, META_PAYER_LEGAL_NAME, META_PAYER_LEGAL_NAME_CAMEL,
+                META_PAYEE_NAME, META_PAYEE_LEGAL_NAME, META_PAYEE_LEGAL_NAME_CAMEL
+            )
             
-            # Extract payment advice number - check both camelCase and snake_case keys
-            payment_advice_number = meta_table.get('paymentAdviceNumber') or meta_table.get('payment_advice_number')
+            # Extract meta fields from the LLM output
+            # Check both camelCase and snake_case keys using constants
+            meta_table = llm_output.get(LLM_META_TABLE_KEY_CAMEL, llm_output.get(LLM_META_TABLE_KEY, {}))
+            
+            # Extract payment advice number using constants
+            payment_advice_number = meta_table.get(META_PAYMENT_ADVICE_NUMBER_CAMEL) or meta_table.get(META_PAYMENT_ADVICE_NUMBER)
             logger.debug(f"Raw paymentAdviceNumber from LLM: {payment_advice_number}")
             
-            # Extract payment advice date - check both camelCase and snake_case keys
+            # Extract payment advice date using constants
             payment_advice_date = None
-            date_str = meta_table.get('paymentAdviceDate') or meta_table.get('payment_advice_date') or meta_table.get('settlement_date')
+            date_str = meta_table.get(META_PAYMENT_ADVICE_DATE_CAMEL) or meta_table.get(META_PAYMENT_ADVICE_DATE) or meta_table.get(META_SETTLEMENT_DATE)
             if date_str:
                 payment_advice_date = parse_date(date_str)
                 logger.debug(f"Parsed paymentAdviceDate from LLM: {date_str} -> {payment_advice_date}")
             
-            # Extract payment advice amount - check both camelCase and snake_case keys
+            # Extract payment advice amount using constants
             payment_advice_amount = None
-            amount_str = meta_table.get('paymentAdviceAmount') or meta_table.get('payment_advice_amount') or meta_table.get('payment_amount')
+            amount_str = meta_table.get(META_PAYMENT_ADVICE_AMOUNT_CAMEL) or meta_table.get(META_PAYMENT_ADVICE_AMOUNT) or meta_table.get(META_PAYMENT_AMOUNT)
             if amount_str:
                 payment_advice_amount = parse_amount(amount_str)
                 logger.debug(f"Parsed paymentAdviceAmount from LLM: {amount_str} -> {payment_advice_amount}")
                 
-            # Extract payer and payee names - check both camelCase and snake_case keys
-            payer_name = meta_table.get('payersLegalName') or meta_table.get('payer_legal_name') or meta_table.get('payer_name')
-            payee_name = meta_table.get('payeesLegalName') or meta_table.get('payee_legal_name') or meta_table.get('payee_name')
+            # Extract payer and payee names using constants
+            payer_name = meta_table.get(META_PAYER_LEGAL_NAME_CAMEL) or meta_table.get(META_PAYER_LEGAL_NAME) or meta_table.get(META_PAYER_NAME)
+            payee_name = meta_table.get(META_PAYEE_LEGAL_NAME_CAMEL) or meta_table.get(META_PAYEE_LEGAL_NAME) or meta_table.get(META_PAYEE_NAME)
             logger.debug(f"Extracted payer/payee names: {payer_name} / {payee_name}")
             
             # For debugging
