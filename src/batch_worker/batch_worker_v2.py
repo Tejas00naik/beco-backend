@@ -33,6 +33,8 @@ from src.services.llm_extraction_service import LLMExtractionService
 from src.external_apis.gcp.gmail_reader import GmailReader, GMAIL_AVAILABLE
 from src.services.email.email_processor import EmailProcessor
 from src.services.payment_processing_service import PaymentProcessingService
+from src.services.sap_export_service import SAPExportService
+from src.services.account_enrichment_service import AccountEnrichmentService
 from src.mocks.email_reader import MockEmailReader
 
 # Import repositories
@@ -87,13 +89,11 @@ class BatchWorkerV2:
         self.dao = FirestoreDAO(collection_prefix=self.collection_prefix)
         
         # Initialize GCS uploader
-        from src.external_apis.gcp.gcs_uploader import GCSUploader
         self.gcs_uploader = GCSUploader(bucket_name=DEFAULT_GCS_BUCKET_NAME)
         
         # Initialize email reader based on configuration
         if use_gmail and gmail_credentials_path:
             # Use Gmail adapter if available and requested
-            from src.external_apis.gcp.gmail_reader import GmailReader, GMAIL_AVAILABLE
             if not GMAIL_AVAILABLE:
                 raise ImportError("Gmail adapter was requested but dependencies are not available")
                 
@@ -105,7 +105,6 @@ class BatchWorkerV2:
             # Use mock email reader only if explicitly not using Gmail
             logger.warning("Gmail adapter not requested or credentials not available")
             logger.warning("Email processing will use mock data - this should only be used for testing")
-            from src.mocks.email_reader import MockEmailReader
             self.email_reader = MockEmailReader()
             logger.info("Using MockEmailReader for testing only")
         
@@ -136,6 +135,12 @@ class BatchWorkerV2:
             logger.error("OPENAI_API_KEY environment variable not set. LLM extraction will fail.")
         self.llm_service = LLMExtractionService(self.dao, self.legal_entity_repo)
         logger.info("Using LLMExtractionService with OpenAI API (GPT-4.1)")
+        
+        # Initialize SAP export service
+        self.sap_export_service = SAPExportService(dao=self.dao)
+        
+        # Initialize account enrichment service
+        self.account_enrichment_service = AccountEnrichmentService(dao=self.dao)
         
         # Initialize payment processing service (modified version needed for V2)
         self.payment_service = PaymentProcessingService(
@@ -325,6 +330,34 @@ class BatchWorkerV2:
                         logger.error(traceback.format_exc())
                 
                 logger.info(f"Successfully saved {saved_count} out of {len(payment_advice_lines)} payment advice lines to Firestore")
+                
+                # Enrich payment advice lines with BP/GL codes first
+                try:
+                    logger.info(f"Enriching payment advice lines with BP/GL codes for {payment_advice_uuid}")
+                    success = await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
+                    if success:
+                        logger.info(f"Successfully enriched payment advice lines for {payment_advice_uuid}")
+                    else:
+                        logger.warning(f"Failed to enrich payment advice lines for {payment_advice_uuid}")
+                except Exception as enrich_error:
+                    logger.error(f"Error enriching payment advice lines: {str(enrich_error)}")
+                    import traceback
+                    logger.error(f"Account Enrichment Traceback: {traceback.format_exc()}")
+                    # Continue processing - we don't want to fail the entire process for enrichment errors
+                
+                # Generate and upload SAP XLSX file for the payment advice
+                try:
+                    logger.info(f"Generating SAP export for payment advice {payment_advice_uuid}")
+                    url = await self.sap_export_service.process_payment_advice_export(payment_advice_uuid)
+                    if url:
+                        logger.info(f"Successfully generated and uploaded SAP export: {url}")
+                    else:
+                        logger.warning(f"Failed to generate or upload SAP export for payment advice {payment_advice_uuid}")
+                except Exception as sap_error:
+                    logger.error(f"Error generating SAP export: {str(sap_error)}")
+                    import traceback
+                    logger.error(f"SAP Export Traceback: {traceback.format_exc()}")
+                    # Continue processing - we don't want to fail the entire process for SAP export errors
             else:
                 logger.warning("No payment advice lines found in LLM output")
             

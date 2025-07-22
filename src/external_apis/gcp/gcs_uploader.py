@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 from typing import Dict, List, Optional, Any, Tuple, BinaryIO, Union
+from datetime import datetime, timedelta
 
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
@@ -197,3 +198,95 @@ class GCSUploader:
         
         # Download the file
         return blob.download_as_bytes()
+        
+    def generate_signed_url(self, object_name: str, expiration_days: int = 7) -> Optional[str]:
+        """
+        Generate a presigned URL for a file in GCS that's valid for the specified number of days.
+        
+        Args:
+            object_name: Path to the object in the bucket
+            expiration_days: Number of days until the URL expires
+            
+        Returns:
+            Presigned URL if successful, None otherwise
+        """
+        try:
+            blob = self.bucket.blob(object_name)
+            
+            if not blob.exists():
+                logger.warning(f"Object not found: {object_name}")
+                return None
+                
+            # Generate a signed URL that's valid for the specified number of days
+            url = blob.generate_signed_url(
+                version="v4",
+                expiration=datetime.utcnow() + timedelta(days=expiration_days),
+                method="GET"
+            )
+            
+            logger.info(f"Generated signed URL for gs://{self.bucket_name}/{object_name} valid for {expiration_days} days")
+            return url
+            
+        except Exception as e:
+            logger.error(f"Error generating signed URL for {object_name}: {str(e)}")
+            return None
+            
+    def upload_file(self, file_path: str, destination_path: str) -> Optional[str]:
+        """
+        Upload a file to GCS and return the object path.
+        
+        Args:
+            file_path: Path to the local file
+            destination_path: Path in GCS where the file should be stored
+            
+        Returns:
+            GCS object path if successful, None otherwise
+        """
+        try:
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                return None
+                
+            blob = self.bucket.blob(destination_path)
+            blob.upload_from_filename(file_path)
+            
+            logger.info(f"Uploaded {file_path} to gs://{self.bucket_name}/{destination_path}")
+            return destination_path
+            
+        except Exception as e:
+            logger.error(f"Error uploading {file_path} to GCS: {str(e)}")
+            return None
+            
+    def upload_and_get_signed_url(self, file_path: str, destination_folder: str, 
+                                   filename: Optional[str] = None, 
+                                   expiration_days: int = 7) -> Optional[str]:
+        """
+        Upload a file to GCS and generate a presigned URL.
+        
+        Args:
+            file_path: Path to the local file
+            destination_folder: Folder path in GCS
+            filename: Name to use for the file in GCS (defaults to basename of file_path)
+            expiration_days: Number of days until the URL expires
+            
+        Returns:
+            Presigned URL if successful, None otherwise
+        """
+        try:
+            # Use provided filename or extract from path
+            actual_filename = filename or os.path.basename(file_path)
+            
+            # Create destination path
+            destination_path = f"{destination_folder}/{actual_filename}"
+            
+            # Upload the file
+            result = self.upload_file(file_path, destination_path)
+            if not result:
+                return None
+                
+            # Generate signed URL
+            return self.generate_signed_url(destination_path, expiration_days)
+            
+        except Exception as e:
+            logger.error(f"Error in upload_and_get_signed_url for {file_path}: {str(e)}")
+            return None
