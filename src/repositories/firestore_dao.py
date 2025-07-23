@@ -195,7 +195,10 @@ class FirestoreDAO:
             # Properly handle async iteration of Firestore's AsyncStreamGenerator
             results = []
             async for doc in query.stream():
-                results.append(doc.to_dict())
+                # Include the document ID in the returned dictionary
+                doc_data = doc.to_dict()
+                doc_data['document_id'] = doc.id  # Add document ID to each result
+                results.append(doc_data)
                 
             logger.info(f"Query returned {len(results)} results from {collection}")
             return results

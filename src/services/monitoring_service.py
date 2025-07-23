@@ -6,6 +6,7 @@ by joining email_log and payment_advice data and updating the Google Sheet.
 """
 
 import logging
+import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -135,6 +136,8 @@ class MonitoringService:
             # Get the email log
             email_log = await self.dao.get_email_log(email_log_uuid)
             
+            logger.info(f"DEBUG - Retrieved email log: {json.dumps(email_log, default=str)}")
+            
             if not email_log:
                 logger.error(f"Email log {email_log_uuid} not found")
                 return False
@@ -142,26 +145,44 @@ class MonitoringService:
             # Get payment advices for this email log
             payment_advices = await self.dao.get_payment_advices_by_email_log(email_log_uuid)
             
-            if not payment_advices:
-                logger.warning(f"No payment advices found for email log {email_log_uuid}")
-                return False
+            logger.info(f"DEBUG - Retrieved payment advices: {json.dumps(payment_advices, default=str)}")
             
             # Join data from email log and payment advices
             entries = []
+            
+            if not payment_advices:
+                # Even if there are no payment advices, check if the sheet is empty
+                # and initialize it with headers if needed
+                logger.warning(f"No payment advices found for email log {email_log_uuid}")
+                
+                # Check if the sheet is empty and needs headers
+                result = self.sheets_service.get_monitoring_entries()
+                
+                if not result:  # Sheet is empty or hasn't been initialized with headers
+                    logger.info("Sheet appears empty or uninitialized, adding headers")
+                    self.sheets_service.setup_monitoring_sheet()
+                    logger.info("Successfully initialized monitoring sheet with headers")
+                
+                return True  # Return success even though we're not adding data rows
             for payment_advice in payment_advices:
+                # Use email_subject instead of subject
+                email_subject = email_log.get("email_subject", "") 
+                
+                # Map Firestore fields to monitoring sheet columns
                 entry = {
-                    "email_subject": email_log.get("subject", ""),
+                    "email_subject": email_subject,
                     "sender": email_log.get("sender_mail", ""),
                     "received_at": email_log.get("received_at"),
-                    "legal_entity_name": payment_advice.get("legal_entity_name", ""),
+                    "legal_entity_name": payment_advice.get("legal_entity_name", payment_advice.get("payer_name", "")),
                     "payment_advice_uuid": payment_advice.get("payment_advice_uuid", ""),
-                    "reference_numbers": ", ".join(payment_advice.get("reference_numbers", [])),
-                    "amount": payment_advice.get("amount", 0),
-                    "sap_export_status": payment_advice.get("sap_export_status", "Pending"),
+                    "reference_numbers": payment_advice.get("payment_advice_number", ""),
+                    "amount": payment_advice.get("payment_advice_amount", 0),
+                    "sap_export_status": payment_advice.get("payment_advice_status", "Pending"),
                     "sap_export_url": payment_advice.get("sap_export_url", ""),
                     "processed_at": payment_advice.get("created_at")
                 }
                 entries.append(entry)
+                logger.info(f"DEBUG - Created entry for sheet: {json.dumps(entry, default=str)}")
             
             # Update the sheet
             success = self.sheets_service.add_monitoring_entries(entries)

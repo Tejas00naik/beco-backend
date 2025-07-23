@@ -138,7 +138,7 @@ class BatchWorkerV2:
         logger.info("Using LLMExtractionService with OpenAI API (GPT-4.1)")
         
         # Initialize SAP export service
-        self.sap_export_service = SAPExportService(dao=self.dao, gcs_uploader=self.gcs_uploader)
+        self.sap_export_service = SAPExportService(dao=self.dao)
         
         # Initialize Account Enrichment Service
         self.account_enrichment_service = AccountEnrichmentService(dao=self.dao)
@@ -503,7 +503,46 @@ class BatchWorkerV2:
                 if success:
                     processed_email_ids.append(email_data["email_id"])
                     # Update monitoring sheet after successful processing
-                    await self.monitoring_service.update_after_batch_processing(email_data["email_log_uuid"])
+                    try:
+                        # Log the full email data structure for debugging
+                        logger.info(f"Email data structure: {json.dumps(email_data, default=str)}")
+                        
+                        # Get the email_log_uuid from wherever it's available
+                        email_log_uuid = None
+                        
+                        # Try multiple potential field names
+                        if 'gcs_folder_uri' in email_data:
+                            email_log_uuid = email_data.get('gcs_folder_uri')
+                            logger.info(f"Using gcs_folder_uri as email_log_uuid: {email_log_uuid}")
+                        elif 'email_log_uuid' in email_data:
+                            email_log_uuid = email_data.get('email_log_uuid')
+                            logger.info(f"Using email_log_uuid directly: {email_log_uuid}")
+                        elif 'id' in email_data:
+                            email_log_uuid = email_data.get('id')
+                            logger.info(f"Using id as email_log_uuid: {email_log_uuid}")
+                        elif 'email_id' in email_data:
+                            # For Gmail adapter, use the email_id
+                            email_log_uuid = email_data.get('email_id')
+                            logger.info(f"Using email_id as email_log_uuid: {email_log_uuid}")
+                        
+                        if email_log_uuid:
+                            logger.info(f"Updating monitoring sheet with email log UUID: {email_log_uuid}")
+                            await self.monitoring_service.update_after_batch_processing(email_log_uuid)
+                        else:
+                            # If all attempts failed, try to get the latest email log from Firestore
+                            logger.warning("Could not find email_log_uuid in email data, trying to get from Firestore")
+                            recent_logs = await self.dao.get_email_logs(limit=1)
+                            if recent_logs and len(recent_logs) > 0:
+                                email_log_uuid = recent_logs[0].get('document_id') or recent_logs[0].get('id') or recent_logs[0].get('email_log_uuid')
+                                if email_log_uuid:
+                                    logger.info(f"Using recent email log UUID from Firestore: {email_log_uuid}")
+                                    await self.monitoring_service.update_after_batch_processing(email_log_uuid)
+                                else:
+                                    logger.error("Cannot update monitoring - email log UUID not found in any source")
+                            else:
+                                logger.error("Cannot update monitoring - email_log_uuid not found in email data or Firestore")
+                    except Exception as monitor_error:
+                        logger.error(f"Error updating monitoring sheet: {str(monitor_error)}", exc_info=True)
             
             # Mark emails as processed in the reader
             if processed_email_ids and hasattr(self.email_reader, 'mark_as_processed'):

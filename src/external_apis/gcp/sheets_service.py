@@ -159,7 +159,7 @@ class SheetsService:
             logger.error(f"Error setting up monitoring sheet: {error}")
             return False
     
-    def add_monitoring_entries(self, entries: List[Dict[str, Any]]):
+    def add_monitoring_entries(self, entries: List[Dict[str, Any]]) -> bool:
         """
         Add new entries to the monitoring sheet.
         
@@ -203,14 +203,24 @@ class SheetsService:
                 ]
                 values.append(row)
             
-            # Determine the next available row (after headers)
+            # Determine if sheet is empty and needs headers
             result = self.service.spreadsheets().values().get(
                 spreadsheetId=self.sheet_id,
                 range="A:A"
             ).execute()
             
             existing_rows = result.get("values", [])
+            is_empty = not existing_rows
             next_row = len(existing_rows) + 1
+            
+            logger.info(f"DEBUG - Sheet status check: is_empty={is_empty}, existing_rows={len(existing_rows)}, next_row={next_row}")
+            
+            # If sheet is empty, add headers first
+            if is_empty:
+                logger.info("Sheet is empty, adding headers first")
+                self.setup_monitoring_sheet()
+                next_row = 2  # After headers
+                logger.info("Headers added to empty sheet, next_row set to 2")
             
             # Append new values to sheet
             self.service.spreadsheets().values().update(
