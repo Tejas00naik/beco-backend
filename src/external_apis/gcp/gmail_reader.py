@@ -30,8 +30,11 @@ from google.auth.transport.requests import Request
 logger = logging.getLogger(__name__)
 
 # Define OAuth2 scopes needed for Gmail API
-# This scope allows read-only access to Gmail
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+# This scope allows read-only access to Gmail and setting up watch notifications
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.modify']
+
+# Using GmailWatchStatus from repository instead
+from src.repositories.gmail_watch_repository import GmailWatchStatus, GmailWatchRepository
 
 # Indicate that Gmail adapter is available
 GMAIL_AVAILABLE = True
@@ -72,19 +75,42 @@ class GmailReader:
     def _authenticate(self):
         """Authenticate with Gmail API and create service."""
         creds = None
+        force_new_token = False
         
         # Check if token file exists and load it
         if os.path.exists(self.token_path):
-            creds = Credentials.from_authorized_user_info(
-                json.load(open(self.token_path)), SCOPES
-            )
+            try:
+                creds = Credentials.from_authorized_user_info(
+                    json.load(open(self.token_path)), SCOPES
+                )
+            except Exception as e:
+                logger.warning(f"Error loading credentials: {str(e)}")
+                # If there's an error loading credentials, force new token
+                force_new_token = True
         
-        # If credentials don't exist or are invalid, refresh or create new ones
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                # Run OAuth2 flow to get credentials
+        # If credentials don't exist, are invalid, or we need to force new token
+        if not creds or not creds.valid or force_new_token:
+            # If we have existing credentials that just need refresh
+            if creds and creds.expired and creds.refresh_token and not force_new_token:
+                try:
+                    creds.refresh(Request())
+                except Exception as e:
+                    logger.warning(f"Error refreshing token (possibly due to scope change): {str(e)}")
+                    # If refresh fails, force new token
+                    force_new_token = True
+            
+            # If we need a completely new token
+            if not creds or force_new_token:
+                logger.info("Getting new Gmail API token with updated scopes")
+                # First try to delete the existing token file if it exists
+                if os.path.exists(self.token_path):
+                    try:
+                        os.remove(self.token_path)
+                        logger.info(f"Deleted old token file at {self.token_path}")
+                    except Exception as e:
+                        logger.warning(f"Error deleting old token file: {str(e)}")
+                
+                # Run OAuth2 flow to get new credentials
                 flow = InstalledAppFlow.from_client_secrets_file(
                     self.credentials_path, SCOPES
                 )
@@ -364,3 +390,214 @@ class GmailReader:
                 import traceback
                 logger.error(traceback.format_exc())
                 return None
+                
+    def check_and_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
+        """
+        Check if Gmail API watch needs to be refreshed and refresh if needed.
+        This is a synchronous wrapper for async_check_and_refresh_watch.
+        
+        Args:
+            email_address: Email address to set up the watch for
+            dao: Firestore DAO instance for storage (optional)
+            pubsub_topic: Full PubSub topic name (projects/PROJECT_ID/topics/TOPIC_NAME)
+                          If not provided, will use default format with vaulted-channel-462118-a5
+        """
+        import asyncio
+        
+        try:
+            # Check if we're already in an event loop
+            try:
+                asyncio.get_running_loop()
+                in_event_loop = True
+            except RuntimeError:
+                in_event_loop = False
+            
+            if in_event_loop:
+                logger.warning("Called sync check_and_refresh_watch from within an event loop - this is not recommended")
+                logger.warning("Consider using async_check_and_refresh_watch instead")
+                # Can't use asyncio.run in an event loop - method must be called from async context
+                # Return without performing the check, to avoid errors
+                return
+                
+            # If we're not in an event loop, we can use asyncio.run
+            asyncio.run(self.async_check_and_refresh_watch(email_address, dao, pubsub_topic))
+        except Exception as e:
+            logger.error(f"Error in check_and_refresh_watch: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+    
+    async def async_check_and_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
+        """
+        Async version of check_and_refresh_watch.
+        Check if Gmail API watch needs to be refreshed and refresh if needed.
+        
+        Args:
+            email_address: Email address to set up the watch for
+            dao: Firestore DAO instance for storage (optional)
+            pubsub_topic: Full PubSub topic name (projects/PROJECT_ID/topics/TOPIC_NAME)
+                          If not provided, will use default format with vaulted-channel-462118-a5
+        """
+        logger.info(f"========== GMAIL WATCH CHECK STARTED for {email_address} ==========")
+        
+        # Create watch repository if DAO provided
+        watch_repo = None
+        if dao:
+            watch_repo = GmailWatchRepository(dao)
+            logger.info(f"GmailWatchRepository created with DAO: {dao.__class__.__name__}")
+        else:
+            logger.warning("No DAO provided, watch status cannot be persisted")
+        
+        # Get watch status from repository if available
+        watch_status = None
+        if watch_repo:
+            try:
+                watch_status = await watch_repo.get_watch_status()
+                if watch_status:
+                    logger.info(f"Current watch status found: ID={watch_status.watch_id}, email={watch_status.email_address}, "  
+                                f"expiration={datetime.fromtimestamp(watch_status.expiration/1000).isoformat() if watch_status.expiration else 'None'}")
+                else:
+                    logger.info("No existing watch status found in database")
+            except Exception as e:
+                logger.error(f"Error getting watch status: {str(e)}")
+            
+        current_time = time.time() * 1000  # Current time in milliseconds (same format as Gmail API expiration)
+        logger.info(f"Current time (ms): {current_time}, ISO: {datetime.fromtimestamp(current_time/1000).isoformat()}")
+        
+        should_refresh = False
+        if not watch_status:
+            # No watch status exists, we should create one
+            logger.info("No existing Gmail watch found, will create a new one")
+            should_refresh = True
+        elif watch_status.expiration:
+            # Check if expiration is approaching (within 1 day)
+            expiration_time = watch_status.expiration
+            one_day_in_ms = 24 * 60 * 60 * 1000
+            time_to_expiration_days = (expiration_time - current_time) / (24 * 60 * 60 * 1000)
+            
+            if current_time + one_day_in_ms >= expiration_time:
+                logger.info(f"Gmail watch expiration approaching in {time_to_expiration_days:.2f} days, "  
+                            f"current: {datetime.fromtimestamp(current_time/1000).isoformat()}, "  
+                            f"expiration: {datetime.fromtimestamp(expiration_time/1000).isoformat()}")
+                should_refresh = True
+            else:
+                logger.info(f"Gmail watch is still valid, expiration in {time_to_expiration_days:.2f} days ("  
+                            f"expires: {datetime.fromtimestamp(expiration_time/1000).isoformat()})")
+        else:
+            # Expiration unknown, refresh to be safe
+            logger.info("Watch status has no expiration time, will refresh to be safe")
+            should_refresh = True
+        
+        if should_refresh:
+            logger.info("Initiating Gmail watch refresh...")
+            await self.async_refresh_watch(email_address, dao, pubsub_topic)
+        else:
+            logger.info("No Gmail watch refresh needed at this time")
+            
+        logger.info(f"========== GMAIL WATCH CHECK COMPLETED for {email_address} ==========\n")
+    
+    def _refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
+        """
+        Synchronous wrapper for async_refresh_watch.
+        Refresh the Gmail API watch subscription.
+        
+        Args:
+            email_address: Email address to set up the watch for
+            dao: Firestore DAO instance for storage (optional)
+            pubsub_topic: Full PubSub topic name (optional)
+            
+        Returns:
+            bool: True if refresh was successful, False otherwise
+        """
+        import asyncio
+        
+        try:
+            # Check if we're already in an event loop
+            try:
+                asyncio.get_running_loop()
+                in_event_loop = True
+            except RuntimeError:
+                in_event_loop = False
+            
+            if in_event_loop:
+                logger.warning("Called sync _refresh_watch from within an event loop - this is not recommended")
+                logger.warning("Consider using async_refresh_watch instead")
+                # Can't use asyncio.run in an event loop - method must be called from async context
+                # Return without performing the refresh, to avoid errors
+                return False
+                
+            # If we're not in an event loop, we can use asyncio.run
+            return asyncio.run(self.async_refresh_watch(email_address, dao, pubsub_topic))
+        except Exception as e:
+            logger.error(f"Error in _refresh_watch: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+            
+    async def async_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
+        """
+        Async version of _refresh_watch.
+        Refresh the Gmail API watch subscription.
+        
+        Args:
+            email_address: Email address to set up the watch for
+            dao: Firestore DAO instance for storage (optional)
+            pubsub_topic: Full PubSub topic name (optional)
+            
+        Returns:
+            bool: True if refresh was successful, False otherwise
+        """
+        logger.info(f"========== GMAIL WATCH REFRESH STARTED for {email_address} ==========")
+        try:
+            # Default PubSub topic if not provided
+            if not pubsub_topic:
+                pubsub_topic = 'projects/vaulted-channel-462118-a5/topics/gmail-notifications'
+                
+            logger.info(f"Using PubSub topic: {pubsub_topic}")
+                
+            # Set up watch request for the inbox
+            request = {
+                'labelIds': ['INBOX'],  # Only watch inbox
+                'topicName': pubsub_topic,
+                'labelFilterBehavior': 'INCLUDE'
+            }
+            
+            logger.info("Calling Gmail API watch method...")
+            # Call the Gmail API watch method
+            response = self.service.users().watch(userId='me', body=request).execute()
+            
+            # Extract response data
+            history_id = response.get('historyId')
+            expiration = response.get('expiration')
+            
+            logger.info(f"Gmail watch API call successful. Response data:")
+            logger.info(f"- History ID: {history_id}")
+            logger.info(f"- Expiration: {expiration} (" + 
+                        f"{datetime.fromtimestamp(int(expiration)/1000).isoformat() if expiration else 'None'})")
+            logger.info(f"- Full response: {response}")
+            
+            # Save watch status using repository if DAO provided
+            if dao:
+                # Create repository
+                watch_repo = GmailWatchRepository(dao)
+                logger.info(f"Created GmailWatchRepository to save status")
+                
+                try:
+                    logger.info("Saving watch status to Firestore...")
+                    result = await watch_repo.save_watch_status(
+                        email_address=email_address,
+                        history_id=history_id,
+                        expiration=int(expiration),
+                        pubsub_topic=pubsub_topic
+                    )
+                    logger.info(f"Watch status saved successfully: {result}")
+                except Exception as e:
+                    logger.error(f"Error saving watch status to repository: {str(e)}")
+            
+            logger.info("Gmail watch refresh completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error refreshing Gmail watch: {str(e)}")
+            # Continue execution - don't fail just because watch refresh failed
+        
+        logger.info(f"========== GMAIL WATCH REFRESH COMPLETED for {email_address} ==========\n")

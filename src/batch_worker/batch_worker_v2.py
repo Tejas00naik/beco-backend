@@ -10,10 +10,11 @@ import os
 import json
 import traceback
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List
 import asyncio
 from uuid import uuid4
 from enum import Enum
+import time
 
 # Import configuration
 from src.config import (
@@ -63,7 +64,7 @@ class BatchWorkerV2:
     
     def __init__(self, is_test: bool = False,
                  mailbox_id: str = "default",
-                 run_mode: Literal["incremental", "full_refresh"] = "incremental",
+                 run_mode: str = "incremental",
                  use_gmail: bool = False,
                  gmail_credentials_path: str = None,
                  since_timestamp: Optional[datetime] = None,
@@ -481,20 +482,21 @@ class BatchWorkerV2:
         Returns:
             bool: True if processing was successful, False otherwise
         """
-        logger.info(f"Processing single email with ID: {email_id}")
-        
+        logger.info(f"========== STARTING SINGLE EMAIL PROCESSING FOR ID: {email_id} ==========")
         try:
             # Start batch run (even for single email we track it as a batch run)
             await self.start_batch_run()
             
             # Get email from the email reader using the ID
+            logger.info(f"Getting email data for ID: {email_id}")
             email_data = self.email_reader.get_email_by_id(email_id)
-            
             if not email_data:
                 logger.error(f"Could not find email with ID: {email_id}")
                 await self.finish_batch_run()
                 return False
                 
+            logger.info(f"Found email with ID: {email_id}, from: {email_data.get('from')}, to: {email_data.get('to')}")
+            
             # Process the email
             success = await self.process_email(email_data)
             
@@ -508,6 +510,34 @@ class BatchWorkerV2:
                 except Exception as monitor_error:
                     logger.error(f"Error updating monitoring sheet: {str(monitor_error)}")
             
+            # Check and refresh Gmail watch if needed
+            try:
+                # Only attempt to refresh if we're using GmailReader (not MockEmailReader)
+                logger.info(f"Checking if email_reader is GmailReader: {isinstance(self.email_reader, GmailReader)}")
+                if isinstance(self.email_reader, GmailReader):
+                    logger.info(f"Email data keys available: {list(email_data.keys())}")
+                    # Try different fields that might contain the email address
+                    email_address = None
+                    for field in ['to', 'from', 'sender_mail', 'original_sender_mail', 'recipient_mail']:
+                        if field in email_data and email_data[field]:
+                            email_address = email_data[field]
+                            break
+                            
+                    if email_address:
+                        logger.info(f"WATCH CHECK: Found email address for watch refresh: {email_address}")
+                        # Use the new async version of check_and_refresh_watch in async context
+                        logger.info("Using async_check_and_refresh_watch from async context")
+                        await self.email_reader.async_check_and_refresh_watch(email_address, self.dao)
+                    else:
+                        logger.warning("WATCH CHECK: Could not find a valid email address for watch refresh")
+                else:
+                    logger.warning("WATCH CHECK: Not using GmailReader, skipping watch refresh")
+            except Exception as watch_error:
+                logger.error(f"WATCH CHECK: Error checking/refreshing Gmail watch: {str(watch_error)}")
+                import traceback
+                logger.error(f"WATCH CHECK: {traceback.format_exc()}")
+                # Don't fail the entire process due to watch refresh issues
+                
             # Finish the batch run
             await self.finish_batch_run()
             
