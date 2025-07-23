@@ -23,7 +23,10 @@ from src.config import (
 )
 
 # Import models
-from src.models.schemas import PaymentAdviceLine, PaymentAdvice, PaymentAdviceStatus
+from src.models.schemas import (
+    PaymentAdviceLine, PaymentAdvice, PaymentAdviceStatus, 
+    EmailProcessingLog, ProcessingStatus, EmailLog
+)
 
 # Import components
 from src.batch_worker.batch_manager import BatchManager, BatchRunStatus
@@ -208,15 +211,52 @@ class BatchWorkerV2:
             return None
     
     async def process_email(self, email_data: Dict[str, Any]):
-        """Process a single email."""
+        """
+        Process a single email and track the processing status at each step.
+        
+        Args:
+            email_data: Dictionary with email details
+            
+        Returns:
+            bool: True if processing was successful, False otherwise
+        """
+        # Generate a unique processing ID if we don't have one
+        email_id = email_data.get('email_id') or str(uuid4())
+        
+        # Create initial email processing log entry with PENDING status
+        processing_log = EmailProcessingLog(
+            email_log_uuid=email_id,
+            run_id=self.batch_manager.batch_run.run_id,
+            processing_status=ProcessingStatus.PARSED,  # Initially set to PARSED (will be updated)
+            error_msg=None
+        )
+        
+        # Save initial processing log to Firestore
+        try:
+            await self.dao.add_document("email_processing_log", email_id, processing_log.__dict__)
+            logger.info(f"Created email processing log for email {email_id}, batch run {self.batch_manager.batch_run.run_id}")
+        except Exception as log_error:
+            logger.error(f"Error creating initial processing log: {str(log_error)}")
+            # Continue processing - we don't want to fail just because logging failed
+        
         try:
             # Process email and create email log
             email_log_uuid, llm_output = await self.email_processor.process_email(email_data)
             
-            # Associate the email processing log with this batch run
-            processing_log_id = email_log_uuid
-            await self.dao.update_document("email_processing_log", processing_log_id, {
-                "run_id": self.batch_manager.batch_run.run_id
+            # Update the processing log with actual email_log_uuid if different
+            if email_log_uuid != email_id:
+                logger.info(f"Email log UUID {email_log_uuid} differs from email ID {email_id}")
+                await self.dao.update_document("email_processing_log", email_id, {
+                    "email_log_uuid": email_log_uuid
+                })
+                # Also create a reference with the email_log_uuid for easier querying
+                processing_log.email_log_uuid = email_log_uuid
+                await self.dao.add_document("email_processing_log", email_log_uuid, processing_log.__dict__)
+            
+            # Update processing log with this batch run
+            await self.dao.update_document("email_processing_log", email_log_uuid, {
+                "run_id": self.batch_manager.batch_run.run_id,
+                "processing_status": ProcessingStatus.PARSED.value
             })
             
             # Print detected legal entity and group UUIDs
@@ -351,6 +391,13 @@ class BatchWorkerV2:
                     url = await self.sap_export_service.process_payment_advice_export(payment_advice_uuid)
                     if url:
                         logger.info(f"Successfully generated and uploaded SAP export: {url}")
+                        
+                        # Update email processing log with SAP_PUSHED status
+                        await self.dao.update_document("email_processing_log", email_log_uuid, {
+                            "processing_status": ProcessingStatus.SAP_PUSHED.value,
+                            "sap_doc_num": payment_advice_uuid  # Using payment advice UUID as SAP doc number
+                        })
+                        logger.info(f"Updated email processing log {email_log_uuid} with SAP_PUSHED status")
                     else:
                         logger.warning(f"Failed to generate or upload SAP export for payment advice {payment_advice_uuid}")
                 except Exception as sap_error:
@@ -367,9 +414,25 @@ class BatchWorkerV2:
             return True
                 
         except Exception as e:
-            logger.error(f"Error processing email: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"Error processing email: {error_msg}")
             import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            error_trace = traceback.format_exc()
+            logger.error(f"Traceback: {error_trace}")
+            
+            # Update email processing log with ERROR status
+            try:
+                # Try both email_id and email_log_uuid as the document ID
+                email_log_id = email_log_uuid if 'email_log_uuid' in locals() else email_id
+                await self.dao.update_document("email_processing_log", email_log_id, {
+                    "processing_status": ProcessingStatus.ERROR.value,
+                    "error_msg": f"{error_msg}\n{error_trace[:500]}"  # Limit error trace length
+                })
+                logger.info(f"Updated email processing log {email_log_id} with ERROR status")
+            except Exception as log_error:
+                logger.error(f"Failed to update processing log with error status: {str(log_error)}")
+                
+            # Update batch level counters
             self.batch_manager.increment_error_count()
             self.errors += 1
             return False
