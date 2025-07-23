@@ -11,13 +11,15 @@ import base64
 import json
 import logging
 import re
+import sys
+import time
 import uuid
-from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
 from email.parser import BytesParser
 from email.policy import default
+from typing import Dict, List, Optional, Any, Tuple
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -319,3 +321,46 @@ class GmailReader:
         # This is just for API compatibility with MockEmailReader
         logger.info(f"Marked {len(email_ids)} emails as processed (no-op for Gmail)")
         pass
+        
+    def get_email_by_id(self, email_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific email by its ID for single-email processing mode.
+        
+        Args:
+            email_id: The Gmail message ID or UUID from email_log
+            
+        Returns:
+            Dict containing email data or None if not found
+        """
+        logger.info(f"Fetching single email with ID: {email_id}")
+        
+        # Check if the ID is a UUID format (from our database) or a Gmail message ID
+        is_uuid_format = len(email_id) == 36 and email_id.count('-') == 4
+        
+        if is_uuid_format:
+            logger.info(f"{email_id} appears to be a UUID format, using most recent emails to find actual Gmail ID")
+            # Get most recent emails to try to match the UUID
+            recent_emails = self.get_unprocessed_emails(datetime.now() - timedelta(days=7))
+            
+            # Search for matching UUID in the fetched emails
+            for email in recent_emails:
+                if email.get('email_log_uuid') == email_id:
+                    gmail_id = email.get('email_id')
+                    logger.info(f"Found matching Gmail ID {gmail_id} for UUID {email_id}")
+                    return email
+                    
+            logger.error(f"Could not find email with UUID {email_id} in recent emails")
+            return None
+        else:
+            try:
+                # Treat as Gmail message ID
+                return self._get_email_content(email_id)
+                
+            except HttpError as error:
+                logger.error(f"Error fetching email {email_id}: {error}")
+                return None
+            except Exception as e:
+                logger.error(f"Unexpected error fetching email {email_id}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None

@@ -471,6 +471,67 @@ class BatchWorkerV2:
         
         return success
     
+    async def process_single_email(self, email_id: str) -> bool:
+        """
+        Process a single email by ID (used for PubSub triggered serverless processing).
+        
+        Args:
+            email_id: Gmail message ID or email log UUID to process
+            
+        Returns:
+            bool: True if processing was successful, False otherwise
+        """
+        logger.info(f"Processing single email with ID: {email_id}")
+        
+        try:
+            # Start batch run (even for single email we track it as a batch run)
+            await self.start_batch_run()
+            
+            # Get email from the email reader using the ID
+            email_data = self.email_reader.get_email_by_id(email_id)
+            
+            if not email_data:
+                logger.error(f"Could not find email with ID: {email_id}")
+                await self.finish_batch_run()
+                return False
+                
+            # Process the email
+            success = await self.process_email(email_data)
+            
+            # Update monitoring sheet after successful processing
+            if success:
+                try:
+                    email_log_uuid = email_data.get('email_log_uuid') or email_data.get('id') or email_data.get('email_id')
+                    if email_log_uuid:
+                        logger.info(f"Updating monitoring sheet with email log UUID: {email_log_uuid}")
+                        await self.monitoring_service.update_after_batch_processing(email_log_uuid)
+                except Exception as monitor_error:
+                    logger.error(f"Error updating monitoring sheet: {str(monitor_error)}")
+            
+            # Finish the batch run
+            await self.finish_batch_run()
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error processing single email {email_id}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Make sure to finish the batch run with error status
+            if self.batch_manager.batch_run:
+                try:
+                    await self.dao.update_document("batch_run", self.batch_manager.batch_run.run_id, {
+                        "end_ts": datetime.utcnow(),
+                        "status": BatchRunStatus.FAILED,
+                        "emails_processed": self.emails_processed,
+                        "errors": self.errors + 1
+                    })
+                except Exception as update_error:
+                    logger.error(f"Failed to update failed batch run: {str(update_error)}")
+            
+            return False
+    
     async def run(self):
         """Main entry point for the batch worker."""
         try:

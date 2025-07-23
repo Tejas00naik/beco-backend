@@ -43,20 +43,22 @@ from src.config import (
 async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Payment Advice Batch Worker")
-    parser.add_argument("--test", action="store_true", help="Run in test mode with dev_ collection prefix")
     parser.add_argument("--mode", choices=["incremental", "full_refresh"], default="incremental", 
                       help="Run mode: incremental or full_refresh")
-    parser.add_argument("--gmail", action="store_true", help="Use Gmail adapter instead of mock email reader")
-    parser.add_argument("--credentials", default=DEFAULT_GMAIL_CREDENTIALS_PATH, 
-                      help=f"Path to Gmail API credentials file (default: {DEFAULT_GMAIL_CREDENTIALS_PATH})")
-    parser.add_argument("--start-date", help="Start date for email fetching in YYYY-MM-DD format")
-    parser.add_argument("--last-n", type=int, default=None, help="Only process the last N emails")
     parser.add_argument("--v2", action="store_true", help="Use BatchWorkerV2 for Zepto payment advice processing")
     
-    args = parser.parse_args()
+    # Add batch/single mode processing arguments
+    parser.add_argument("--batch", action="store_true", help="Run in batch mode (process multiple emails, default)")
+    parser.add_argument("--single", action="store_true", help="Run in single email mode (process one specific email)")
+    parser.add_argument("--email-id", help="Email ID to process (required for --single mode)")
     
-    # Also check environment variables
-    is_test = args.test or os.environ.get("TEST_MODE", "false").lower() == "true"
+    # Optional email fetching parameters
+    # Only used if you want to override the default behavior (fetch since last processed email)  
+    parser.add_argument("--start-date", help="Override: Start date for email fetching in YYYY-MM-DD format")
+    parser.add_argument("--last-n", type=int, default=None, help="Override: Only process the last N emails")
+    
+    
+    args = parser.parse_args()
     
     # Parse start date if provided
     start_date = None
@@ -79,37 +81,58 @@ async def main():
         except ValueError:
             logger.error(f"Invalid start date format: {args.start_date}. Should be YYYY-MM-DD")
             sys.exit(1)
-    
-    # Set environment variable for batch worker
-    if start_date:
-        os.environ["INITIAL_FETCH_START_DATE"] = args.start_date
-    
+
     # Initialize and run the batch worker
     if args.v2:
         logger.info("Using BatchWorkerV2 for Zepto payment advice processing")
         worker = BatchWorkerV2(
-            is_test=is_test,
+            is_test=False,  # Always use production mode
             mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
             run_mode=args.mode,
-            use_gmail=args.gmail,
-            gmail_credentials_path=args.credentials,
+            use_gmail=True,  # Always use real Gmail
+            gmail_credentials_path=DEFAULT_GMAIL_CREDENTIALS_PATH,  # Always use default credentials path
             since_timestamp=start_date if start_date else None,
             last_n_emails=args.last_n  # Limit to last N emails if specified
         )
     else:
         logger.info("Using standard BatchWorker")
         worker = BatchWorker(
-            is_test=is_test,
+            is_test=False,  # Always use production mode
             mailbox_id=TARGET_MAILBOX_ID,  # Use hardcoded mailbox ID from config
             run_mode=args.mode,
-            use_gmail=args.gmail,
-            gmail_credentials_path=args.credentials,
+            use_gmail=True,  # Always use real Gmail
+            gmail_credentials_path=DEFAULT_GMAIL_CREDENTIALS_PATH,  # Always use default credentials path
             since_timestamp=start_date if start_date else None,
             last_n_emails=args.last_n  # Limit to last N emails if specified
         )
     
     logger.info(f"Using hardcoded mailbox ID: {TARGET_MAILBOX_ID}")
-    await worker.run()
+    
+    # Handle batch vs single mode operation
+    if args.single:
+        if not args.email_id:
+            logger.error("--email-id is required when using --single mode")
+            sys.exit(1)
+            
+        # Single email mode
+        logger.info(f"Running in SINGLE EMAIL MODE for email ID: {args.email_id}")
+        
+        # Only BatchWorkerV2 has single email processing capability
+        if not args.v2:
+            logger.error("Single email mode is only supported with BatchWorkerV2 (--v2)")
+            sys.exit(1)
+            
+        success = await worker.process_single_email(args.email_id)
+        
+        if success:
+            logger.info(f"Successfully processed single email: {args.email_id}")
+        else:
+            logger.error(f"Failed to process single email: {args.email_id}")
+            sys.exit(1)
+    else:
+        # Default to batch mode
+        logger.info("Running in BATCH MODE")
+        await worker.run()
 
 
 if __name__ == "__main__":
