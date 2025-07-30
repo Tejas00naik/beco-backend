@@ -29,9 +29,10 @@ def create_deployment_package(token_path, credentials_path, output_dir):
     # Create directories
     os.makedirs(os.path.join(output_dir, 'secrets'), exist_ok=True)
     
-    # Copy main.py and requirements.txt
-    shutil.copy('main.py', output_dir)
-    shutil.copy('requirements.txt', output_dir)
+    # Copy main.py and requirements.txt with correct paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    shutil.copy(os.path.join(script_dir, 'main.py'), output_dir)
+    shutil.copy(os.path.join(script_dir, 'requirements.txt'), output_dir)
     
     # Copy the entire src directory
     src_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src')
@@ -57,6 +58,18 @@ def create_deployment_package(token_path, credentials_path, output_dir):
         # Copy token.json
         shutil.copy(token_path, os.path.join(output_dir, 'secrets', 'token.json'))
         print("✅ Copied token.json")
+        
+        # Copy .env file if it exists
+        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+        if os.path.exists(env_file):
+            shutil.copy(env_file, os.path.join(output_dir, '.env'))
+            print("✅ Copied .env file")
+        else:
+            print("⚠️ Warning: .env file not found in project root")
+            # Create a minimal .env with required values
+            with open(os.path.join(output_dir, '.env'), 'w') as f:
+                f.write("FIRESTORE_PROJECT_ID=vaulted-channel-462118-a5\n")
+            print("✅ Created minimal .env with FIRESTORE_PROJECT_ID")
         
         # Copy all files from secrets directory
         secrets_dir = os.path.dirname(credentials_path)
@@ -190,13 +203,44 @@ def modify_main_for_local_files(main_path):
             
         if "def access_secret(" in line:
             skip_lines = True
+            filtered_lines.append("# Access secrets from local files instead")
             continue
             
-        if skip_lines and line.startswith("def process_pubsub_message"):
+        if skip_lines and "def process_pubsub_message" in line:
+            # Stop skipping and ensure the process_pubsub_message function is included
             skip_lines = False
+            filtered_lines.append(line)  # Add the function definition line
+            continue
             
         if not skip_lines:
             filtered_lines.append(line)
+    
+    # Verify the process_pubsub_message function is in the filtered content
+    has_entrypoint = False
+    for line in filtered_lines:
+        if "def process_pubsub_message" in line:
+            has_entrypoint = True
+            break
+            
+    if not has_entrypoint:
+        print("\nWARNING: process_pubsub_message function not found in modified file!\n")
+        # Add a minimal version if missing
+        filtered_lines.append(
+'''
+async def process_pubsub_message(event, context):
+    """Cloud Function entry point: process a Pub/Sub message from Gmail push notifications.
+    
+    Args:
+        event: Pub/Sub message data
+        context: Cloud Function context
+        
+    Returns:
+        Response message or error
+    """
+    logger.error("ERROR: Original process_pubsub_message function missing from deployment!")
+    return "Error: Cloud Function not properly deployed", 500
+''')
+
     
     # Write modified content back
     with open(main_path, 'w') as f:
@@ -204,10 +248,19 @@ def modify_main_for_local_files(main_path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare Gmail Cloud Function deployment package")
-    parser.add_argument("--token", default="../token.json", help="Path to token.json file")
-    parser.add_argument("--credentials", default="../secrets/email-client-secret.json", 
-                        help="Path to OAuth client secret file")
-    parser.add_argument("--output", default="./deployment", help="Output directory for deployment package")
+    
+    # Use absolute paths based on repository structure
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    parser.add_argument("--token", 
+                      default=os.path.join(base_dir, "token.json"), 
+                      help="Path to token.json file")
+    parser.add_argument("--credentials", 
+                      default=os.path.join(base_dir, "secrets", "email-client-secret.json"), 
+                      help="Path to OAuth client secret file")
+    parser.add_argument("--output", 
+                      default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "deployment"), 
+                      help="Output directory for deployment package")
     
     args = parser.parse_args()
     

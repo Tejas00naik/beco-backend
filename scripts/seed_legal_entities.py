@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 # Add the parent directory to the Python path so we can import our modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models.firestore_dao import FirestoreDAO
+from src.repositories.firestore_dao import FirestoreDAO
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +26,8 @@ SAMPLE_GROUPS = [
     {"group_uuid": "group-amazon-12345", "group_name": "Amazon Group"},
     {"group_uuid": "group-acme-67890", "group_name": "Acme Group"},
     {"group_uuid": "group-conglomerate-24680", "group_name": "Conglomerate Group"},
-    {"group_uuid": "group-misc-13579", "group_name": "Miscellaneous Group"}
+    {"group_uuid": "group-misc-13579", "group_name": "Miscellaneous Group"},
+    {"group_uuid": "group-zepto-67890", "group_name": "Zepto Group"}
 ]
 
 # Sample legal entities to seed with group associations
@@ -40,7 +41,11 @@ SAMPLE_LEGAL_ENTITIES = [
     # Amazon's legal entities for testing direct lookup - all in the same group
     {"legal_entity_uuid": "amazon-clicktech-retail-123456", "legal_entity_name": "Clicktech Retail Private Limited", "group_uuid": "group-amazon-12345"},
     {"legal_entity_uuid": "amazon-clicktech-services-456789", "legal_entity_name": "Amazon Clicktech Services Private Limited", "group_uuid": "group-amazon-12345"},
-    {"legal_entity_uuid": "amazon-seller-services-789012", "legal_entity_name": "Amazon Seller Services", "group_uuid": "group-amazon-12345"}
+    {"legal_entity_uuid": "amazon-seller-services-789012", "legal_entity_name": "Amazon Seller Services", "group_uuid": "group-amazon-12345"},
+    # Zepto/Kiranakart legal entities
+    {"legal_entity_uuid": "kiranakart-technologies-12345", "legal_entity_name": "KIRANAKART TECHNOLOGIES PRIVATE LIMITED", "group_uuid": "group-zepto-67890"},
+    {"legal_entity_uuid": "zepto-retail-23456", "legal_entity_name": "ZEPTO RETAIL LIMITED", "group_uuid": "group-zepto-67890"},
+    {"legal_entity_uuid": "kiranakart-alt-34567", "legal_entity_name": "Kiranakart Technologies", "group_uuid": "group-zepto-67890", "alternate_names": ["Zepto", "Kiranakart", "Zepto / Kiranakart"]}
 ]
 
 async def seed_legal_entities():
@@ -112,8 +117,10 @@ async def seed_legal_entities():
                 {
                     "legal_entity_uuid": entity.get("legal_entity_uuid"),
                     "legal_entity_name": entity.get("legal_entity_name"),
+                    "group_uuid": entity.get("group_uuid"),
                     "is_active": True,
-                    "group_uuid": entity.get("group_uuid", ""),  # Use provided group_uuid
+                    "metadata": None,
+                    "alternate_names": entity.get("alternate_names", []),
                     "created_at": datetime.utcnow().isoformat(),
                     "updated_at": datetime.utcnow().isoformat()
                 }

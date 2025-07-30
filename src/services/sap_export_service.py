@@ -91,24 +91,47 @@ class SAPExportService:
         """
         sap_rows = []
         payment_date = payment_advice.get("payment_advice_date")
+        logger.info(f"Original payment_advice_date from Firestore: {payment_date}, type: {type(payment_date)}")
         
         if isinstance(payment_date, str):
             try:
-                # Convert string to datetime if needed
-                payment_date = datetime.strptime(payment_date, "%Y-%m-%d").date()
+                # Try multiple date formats since data in Firestore might be in different formats
+                # First try YYYY-MM-DD format
+                try:
+                    payment_date = datetime.strptime(payment_date, "%Y-%m-%d").date()
+                    logger.info(f"Converted payment_date from YYYY-MM-DD format: {payment_date}")
+                except ValueError:
+                    # Try DD/MM/YYYY format
+                    try:
+                        payment_date = datetime.strptime(payment_date, "%d/%m/%Y").date()
+                        logger.info(f"Converted payment_date from DD/MM/YYYY format: {payment_date}")
+                    except ValueError:
+                        # Try MM/DD/YYYY format as last resort
+                        payment_date = datetime.strptime(payment_date, "%m/%d/%Y").date()
+                        logger.info(f"Converted payment_date from MM/DD/YYYY format: {payment_date}")
             except Exception as e:
                 logger.warning(f"Failed to parse payment date: {payment_date}, {str(e)}")
                 payment_date = None
+        elif isinstance(payment_date, datetime):
+            # If it's already a datetime object, just get the date part
+            payment_date = payment_date.date()
+            logger.info(f"Using datetime object directly: {payment_date}")
                 
         # Map payment date to SAP format YYYY/MM/DD as per example
         payment_date_str = payment_date.strftime("%Y/%m/%d") if payment_date else ""
+        logger.info(f"Final payment_date_str for SAP format: '{payment_date_str}'")
+        
+        # If payment_date_str is empty, try a fallback approach
+        if not payment_date_str:
+            logger.warning("Payment date string is empty, using fallback to current date")
+            payment_date_str = datetime.now().strftime("%Y/%m/%d")
         
         # Add header row - minimal header as per example
         header_row = {
             "Record Type": "H",
             "Series": "JE25/",
-            "Posting Date": payment_date_str,
-            "Due Date": payment_date_str,
+            "Posting Date": datetime.now().strftime("%Y/%m/%d"),
+            "Due Date": datetime.now().strftime("%Y/%m/%d"),
             "Document Date": payment_date_str,
             "Remarks": "",
             "Indicator Code": "",

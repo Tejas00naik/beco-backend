@@ -74,17 +74,28 @@ class AccountRepository:
             
     async def get_bp_account_by_legal_entity(self, legal_entity_uuid: str) -> Optional[Account]:
         """
-        Get the BP account associated with a legal entity.
-        Assumes a 1:1 relationship between legal entity and BP account.
+        Get the BP account for a legal entity.
         
         Args:
             legal_entity_uuid: UUID of the legal entity
             
         Returns:
-            Account object if found, None otherwise
+            BP account if found, None otherwise
         """
         try:
-            # Query accounts with the given legal entity UUID and account_type = BP
+            # Check if legal entity exists first
+            legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
+            if not legal_entity:
+                logger.error(f"Legal entity {legal_entity_uuid} not found in database")
+                return None
+            else:
+                logger.info(f"Legal entity found: {legal_entity.get('name', 'Unknown')} (UUID: {legal_entity_uuid})")
+            
+            # Log the collection name we're querying
+            collection = "account"
+            logger.info(f"Querying collection '{collection}' for BP accounts linked to legal entity {legal_entity_uuid}")
+            
+            logger.info(f"Querying account collection for legal entity UUID {legal_entity_uuid}")
             account_data_list = await self.dao.query_documents(
                 "account", 
                 [
@@ -93,18 +104,66 @@ class AccountRepository:
                 ]
             )
             
+            # Log the query results
             if not account_data_list:
-                logger.warning(f"No BP account found for legal entity {legal_entity_uuid}")
+                logger.error(f"No BP accounts found for legal entity {legal_entity_uuid} in collection '{collection}'")
+                
+                # Try another query without the account_type filter to see if any accounts exist
+                logger.info(f"Trying broader query without account_type filter for legal entity {legal_entity_uuid}")
+                all_accounts = await self.dao.query_documents(
+                    collection,
+                    [("legal_entity_uuid", "==", legal_entity_uuid)]
+                )
+                
+                if all_accounts:
+                    logger.info(f"Found {len(all_accounts)} accounts with different types for legal entity {legal_entity_uuid}:")
+                    for acc in all_accounts:
+                        logger.info(f"Account {acc.get('account_uuid', 'Unknown')}: type={acc.get('account_type', 'Unknown')}, ")
+                else:
+                    logger.error(f"No accounts of any type found for legal entity {legal_entity_uuid}")
+                
+                # Try listing all BP accounts to see if they exist but with different legal entities
+                bp_accounts = await self.dao.query_documents(
+                    collection,
+                    [("account_type", "==", "BP")],
+                    limit=5
+                )
+                
+                if bp_accounts:
+                    logger.info(f"Found {len(bp_accounts)} BP accounts (showing up to 5):")
+                    for acc in bp_accounts:
+                        logger.info(f"BP Account {acc.get('account_uuid', 'Unknown')}: legal_entity={acc.get('legal_entity_uuid', 'None')}")
+                else:
+                    logger.error("No BP accounts found in the entire collection")
+                    
                 return None
                 
             # Use the first account (should only be one)
             account_data = account_data_list[0]
+            logger.info(f"Found account data: {account_data}")
+            
+            # Try to create Account object and check if it has required fields
+            if 'account_uuid' not in account_data:
+                logger.error(f"Account data missing 'account_uuid' field: {account_data}")
+                return None
+                
+            if 'sap_account_id' not in account_data or not account_data['sap_account_id']:
+                logger.warning(f"Account {account_data.get('account_uuid')} has no SAP account ID")
+            
+            # Remove document_id field if it exists to prevent initialization error
+            if 'document_id' in account_data:
+                logger.info(f"Removing document_id field from account data before Account initialization")
+                account_data.pop('document_id')
+                
             account = Account(**account_data)
             
-            logger.info(f"Found BP account {account.account_uuid} with SAP ID {account.sap_account_id} for legal entity {legal_entity_uuid}")
+            logger.info(f"Successfully created Account object with UUID={account.account_uuid} and SAP ID={account.sap_account_id}")
             return account
+            
         except Exception as e:
+            import traceback
             logger.error(f"Error getting BP account for legal entity {legal_entity_uuid}: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
             
     async def get_tds_account(self) -> Optional[Account]:
@@ -116,6 +175,7 @@ class AccountRepository:
         """
         try:
             # Query accounts with is_tds_account = True
+            logger.info("Querying account collection for TDS account")
             account_data_list = await self.dao.query_documents(
                 "account", 
                 [
@@ -130,6 +190,12 @@ class AccountRepository:
                 
             # Use the first account (should only be one)
             account_data = account_data_list[0]
+            
+            # Remove document_id field if it exists to prevent initialization error
+            if 'document_id' in account_data:
+                logger.info(f"Removing document_id field from account data before Account initialization")
+                account_data.pop('document_id')
+                
             account = Account(**account_data)
             
             logger.info(f"Found TDS account {account.account_uuid} with SAP ID {account.sap_account_id}")

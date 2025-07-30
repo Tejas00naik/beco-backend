@@ -93,44 +93,64 @@ class LegalEntityLLMClient:
             # Log request details for debugging
             logger.info(f"Using model: {self.default_model} for legal entity detection")
             logger.info(f"Prompt context contains {len(legal_entity_names)} legal entity names")
+            logger.debug(f"Available legal entities: {legal_entity_names}")
+            logger.debug(f"Text length for detection - Email: {len(email_body or '')} chars, Document: {len(document_text or '')} chars")
+            
+            # Log first 100 chars of the document text for debugging
+            if document_text:
+                preview = document_text[:100].replace('\n', ' ').strip()
+                logger.info(f"Document text preview: '{preview}...'")
             
             # Log a limited portion of the user text for debugging
             user_text_sample = combined_text[:200] + "..." if len(combined_text) > 200 else combined_text
             logger.info(f"Sample of text sent to LLM: {user_text_sample}")
             
+            # Make the API call
             async with aiohttp.ClientSession() as session:
+                logger.info("Making OpenAI API call for legal entity detection")
                 async with session.post(
                     "https://api.openai.com/v1/chat/completions", 
                     headers=headers, 
                     json=payload
                 ) as response:
-                    response_data = await response.json()
+                    response_status = response.status
+                    result = await response.json()
+                    logger.info(f"OpenAI API response status: {response_status}")
                     logger.info(f"LLM API response status: {response.status}")
                     
                     # Log usage statistics if available
-                    if "usage" in response_data:
-                        usage = response_data["usage"]
+                    if "usage" in result:
+                        usage = result["usage"]
                         logger.info(f"LLM API usage: {usage}")
                     
-                    if response.status != 200:
-                        logger.error(f"Error calling OpenAI API: {response_data}")
+                    if response_status != 200:
+                        logger.error(f"Error calling OpenAI API: {result}")
                         return "UNKNOWN"
                         
-                    # Extract the detected legal entity name from the response
-                    detected_name = response_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                    logger.info(f"LLM detected legal entity: '{detected_name}'")
-                    
-                    # Log full response for debugging if needed
-                    if "choices" in response_data:
-                        choices_data = response_data["choices"]
-                        finish_reason = choices_data[0].get("finish_reason") if choices_data else "unknown"
-                        logger.info(f"LLM finish_reason: {finish_reason}")
-                    
-                    # Return the detected name or "UNKNOWN"
-                    return detected_name
-                
+                    try:
+                        entity = result["choices"][0]["message"]["content"].strip()
+                        logger.info(f"Detected entity from LLM: '{entity}'")
+                        
+                        # Log whether it's in the provided list
+                        if entity in legal_entity_names:
+                            logger.info(f"Entity '{entity}' found in legal entity list - EXACT MATCH")
+                        elif entity == "UNKNOWN":
+                            logger.warning("LLM couldn't confidently identify any entity - returned UNKNOWN")
+                        else:
+                            logger.warning(f"Entity '{entity}' NOT found in legal entity list - potential parsing issue")
+                            # Check for fuzzy matches - in case the entity name has slight differences
+                            for name in legal_entity_names:
+                                if entity.lower() in name.lower() or name.lower() in entity.lower():
+                                    logger.info(f"Found fuzzy match: '{entity}' ~ '{name}'")
+                        
+                        return entity
+                    except (KeyError, IndexError) as e:
+                        logger.error(f"Error parsing LLM response: {str(e)}")
+                        logger.error(f"Response: {json.dumps(result)}")
+                        return "UNKNOWN"
+                        
         except Exception as e:
-            logger.error(f"Error during legal entity detection: {e}")
+            logger.error(f"Error during legal entity detection: {str(e)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             

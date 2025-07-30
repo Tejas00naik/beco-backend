@@ -7,6 +7,7 @@ import sys
 import tempfile
 import base64
 import re
+import PyPDF2
 from typing import Dict, Any, Optional, List, Union
 from pathlib import Path
 from dotenv import load_dotenv
@@ -103,14 +104,7 @@ class LLMExtractor:
         # Pre-detect group using a simple extraction technique if not provided
         if not group_uuid:
             logger.info("No group_uuid provided, attempting to pre-detect group...")
-            # Check email body for Amazon-related keywords
-            if email_body and self._pre_detect_amazon_format(email_body):
-                logger.info("Pre-detected Amazon format from email body")
-                group_uuid = "group-amazon-12345"
-            # Quick heuristic for Amazon detection
-            elif "Clicktech Retail" in document_text or "Amazon" in document_text:
-                group_uuid = "group-amazon-12345"
-                logger.info(f"Pre-detected group_uuid: {group_uuid} from document text")
+            raise Exception("No group_uuid provided")
             
         # Select the appropriate prompt based on group_uuid
         prompt_template = self._get_prompt_template(group_uuid)
@@ -120,323 +114,44 @@ class LLMExtractor:
         if email_body:
             instruction = f"EMAIL BODY:\n{email_body}\n\nINSTRUCTIONS:\n{instruction}"
             
-        # Two different approaches based on whether we want to use direct file upload
-        use_file_api = pdf_path and False  # Disabled for now due to API errors
-        
-        if use_file_api:
-            logger.info(f"Processing PDF file using direct file upload: {pdf_path}")
-            try:
-                # Using the file upload API for PDFs
-                with open(pdf_path, "rb") as file:
-                    # Step 1: Upload the PDF file
-                    upload = self.openai_client.files.create(
-                        file=file,
-                        purpose="user_data"
-                    )
-                    file_id = upload.id
-                    logger.info(f"Uploaded PDF with file ID: {file_id}")
-                
-                # Step 2: Include the file in the conversation input
-                logger.info(f"Calling {self.model} with direct file upload")
-                response = self.openai_client.responses.create(
-                    model="gpt-4.1-mini",  # Using gpt-4.1-mini for file processing
-                    input=[
-                        {"type": "text", "text": instruction},
-                        {"type": "file", "file_id": file_id}
-                    ],
-                    temperature=0.0  # Deterministic output
-                )
-                
-                response_text = response.output_text
-                logger.info(f"Got response with {len(response_text)} chars")
-            except Exception as e:
-                logger.error(f"Error using file upload API: {str(e)}")
-                use_file_api = False  # Fall back to text extraction method
-        
-        if not use_file_api:
-            # Traditional text-based approach
-            logger.info(f"Processing document using text input with prompt template: {prompt_template['name']}")
-            full_text = document_text
-            if email_body:
-                full_text = f"EMAIL BODY:\n{email_body}\n\nDOCUMENT CONTENT:\n{document_text}"
-                
-            # Call the LLM with text
-            logger.info(f"Calling {self.model} with document text")
-            try:
-                # Add timeout to prevent hanging indefinitely
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": prompt_template["template"]},
-                        {"role": "user", "content": full_text}
-                    ],
-                    temperature=0.0,  # Deterministic output
-                    timeout=60.0  # 60 second timeout
-                )
-                
-                response_text = response.choices[0].message.content
-                logger.info(f"Got response with {len(response_text)} chars")
-            except Exception as e:
-                logger.error(f"Error calling OpenAI API: {str(e)}")
-                # Provide a fallback response structure to avoid cascading failures
-                response_text = '{"meta_table": {}, "invoice_table": [], "other_doc_table": [], "settlement_table": []}'
-                logger.warning(f"Using fallback response structure due to API error: {response_text}")
-                # You may want to re-raise the error after logging in certain cases
-                # raise
+        # Traditional text-based approach
+        logger.info(f"Processing document using text input with prompt template: {prompt_template['name']}")
+        full_text = document_text
+        if email_body:
+            full_text = f"EMAIL BODY:\n{email_body}\n\nDOCUMENT CONTENT:\n{document_text}"
+            
+        # Call the LLM with text
+        logger.info(f"Calling {self.model} with document text")
+        try:
+            # Add timeout to prevent hanging indefinitely
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": prompt_template["template"]},
+                    {"role": "user", "content": full_text}
+                ],
+                temperature=0.0,  # Deterministic output
+                timeout=60.0  # 60 second timeout
+            )
+            
+            response_text = response.choices[0].message.content
+            logger.info(f"Got response with {len(response_text)} chars")
+        except Exception as e:
+            logger.error(f"Error calling OpenAI API: {str(e)}")
+            # Provide a fallback response structure to avoid cascading failures
+            response_text = '{"meta_table": {}, "invoice_table": [], "other_doc_table": [], "settlement_table": []}'
+            logger.warning(f"Using fallback response structure due to API error: {response_text}")
+            # You may want to re-raise the error after logging in certain cases
+            # raise
         
         # Extract JSON from response
         processed_output = self._extract_json_from_response(response_text)
-        
-        # Detect legal entity and get final group_uuid from extracted data
-        detected_legal_entity = await self._detect_legal_entity(processed_output)
-        if detected_legal_entity:
-            processed_output.update(detected_legal_entity)
-            # Update group_uuid for post-processing if it was found
-            if "group_uuid" in detected_legal_entity:
-                group_uuid = detected_legal_entity["group_uuid"]
         
         # Apply group-specific post-processing using the factory pattern
         processed_output = self._post_process_group_output(processed_output, group_uuid)
             
         return processed_output
-            
-    async def _process_pdf_file(self, pdf_path: str, prompt: str, email_body: str = None, group_uuid: str = None) -> Dict[str, Any]:
-        """
-        Process a PDF file by first extracting text and then using OpenAI's API.
-        
-        Args:
-            pdf_path: Path to the PDF file
-            prompt: Prompt to use for extraction
-            email_body: Optional email body text
-            group_uuid: Optional group UUID for post-processing
-            
-        Returns:
-            Extracted data from the PDF
-        """
-        try:
-            # Check if file exists
-            if not os.path.exists(pdf_path):
-                raise FileNotFoundError(f"PDF file not found at path: {pdf_path}")
-                
-            logger.info(f"Processing PDF file: {pdf_path}")
-            
-            # Check if USE_ASSISTANTS_API flag is set to use the new Assistants API approach
-            use_assistants_api = os.environ.get("USE_ASSISTANTS_API", "False").lower() == "true"
-            
-            if use_assistants_api:
-                logger.info("Using OpenAI Assistants API for PDF processing")
-                output = await self._process_pdf_with_assistants_api(pdf_path, prompt, email_body)
-            else:
-                logger.info("Using standard text extraction and API for PDF processing")
-                # Use the traditional text extraction method
-                # Import PyPDF2 here to avoid circular imports
-                try:
-                    import PyPDF2
-                except ImportError:
-                    logger.warning("PyPDF2 not installed. Installing now...")
-                    import subprocess
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
-                    import PyPDF2
-                
-                # Extract text from PDF
-                logger.info("Extracting text from PDF...")
-                pdf_text = ""
-                with open(pdf_path, "rb") as pdf_file:
-                    pdf_reader = PyPDF2.PdfReader(pdf_file)
-                    for page_num in range(len(pdf_reader.pages)):
-                        page = pdf_reader.pages[page_num]
-                        pdf_text += page.extract_text() + "\n\n"
-                
-                logger.info(f"Extracted {len(pdf_text)} characters from PDF")
-                
-                # Prepare the message content and prompt
-                extraction_prompt = f"{prompt}\n\nExtract the payment advice data from the following text (extracted from PDF) in JSON format. Include invoice details, settlement information, and any other relevant data.\n\nPDF TEXT:\n{pdf_text}"
-                
-                # Add email body if provided
-                if email_body:
-                    extraction_prompt += f"\n\nAdditional context from email body:\n{email_body}"
-                
-                # Make the API call with the text
-                logger.info(f"Calling {self.model} with extracted PDF text")
-                
-                # Call the API using chat completions with text only
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": extraction_prompt
-                        }
-                    ],
-                    max_tokens=4000  # Ensure we have enough tokens for the full response
-                )
-                
-                # Get the text response
-                response_content = response.choices[0].message.content
-                logger.info(f"Got response with {len(response_content)} chars")
-                
-                # Print raw LLM output for debugging
-                print(f"\n\n=== RAW LLM OUTPUT ===\n{response_content}\n=========================\n\n")
-                logger.info(f"Raw LLM output: {response_content}")
-                
-                # Extract JSON from response
-                output = self._extract_json_from_response(response_content)
-            
-            # Post-process output using the factory pattern
-            output = self._post_process_group_output(output, group_uuid)
-                
-            return output
-            
-        except Exception as e:
-            logger.error(f"Error processing PDF file with OpenAI API: {str(e)}")
-            raise
-            
-    async def _process_pdf_with_assistants_api(self, pdf_path: str, prompt: str, email_body: str = None) -> Dict[str, Any]:
-        """
-        Process a PDF file using OpenAI's Assistants API with direct PDF handling.
-        
-        Args:
-            pdf_path: Path to the PDF file
-            prompt: Prompt to use for extraction
-            email_body: Optional email body text
-            
-        Returns:
-            Extracted JSON data from the PDF
-        """
-        try:
-            logger.info(f"Processing PDF with Assistants API: {pdf_path}")
-            
-            # 1. Get or create an assistant
-            assistant = await self._get_or_create_assistant()
-            logger.info(f"Using assistant: {assistant.id}")
-            
-            # 2. Upload the PDF file to OpenAI API
-            with open(pdf_path, "rb") as pdf_file:
-                file = self.client.files.create(
-                    file=pdf_file,
-                    purpose="assistants"
-                )
-            logger.info(f"Uploaded file: {file.id}")
-            
-            # 3. Create a thread
-            thread = self.client.beta.threads.create()
-            logger.info(f"Created thread: {thread.id}")
-            
-            # 4. Add a message to the thread with PDF attachment and prompt
-            final_prompt = prompt
-            if email_body:
-                final_prompt += f"\n\nAdditional context from email body:\n{email_body}"
-                
-            final_prompt += "\n\nFormat your response as valid JSON. Ensure all fields are properly extracted and formatted."
-            
-            # Create a message with the PDF attachment
-            message = self.client.beta.threads.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=final_prompt,
-                attachments=[
-                    Attachment(
-                        file_id=file.id,
-                        tools=[AttachmentToolFileSearch(type="file_search")]
-                    )
-                ]
-            )
-            logger.info(f"Added message with PDF attachment to thread")
-            
-            # 5. Run the thread with the assistant and wait for completion
-            run = self.client.beta.threads.runs.create_and_poll(
-                thread_id=thread.id,
-                assistant_id=assistant.id,
-                timeout=600  # 10 minutes timeout
-            )
-            
-            if run.status != "completed":
-                logger.error(f"Run failed with status: {run.status}")
-                raise Exception(f"Assistant API run failed: {run.status}")
-                
-            logger.info(f"Run completed successfully")
-            
-            # 6. Get the assistant's response
-            messages_cursor = self.client.beta.threads.messages.list(
-                thread_id=thread.id
-            )
-            messages = [message for message in messages_cursor]
-            
-            # First message is the assistant's response
-            response_message = messages[0]
-            
-            # Check if the message has text content
-            if response_message.content and len(response_message.content) > 0:
-                response_content = response_message.content[0].text.value
-                
-                # Print raw output from Assistants API for debugging
-                print(f"\n\n=== RAW ASSISTANTS API OUTPUT ===\n{response_content}\n=========================\n\n")
-                logger.info(f"Got Assistants API response with {len(response_content)} chars")
-                
-                # Extract JSON from the response
-                output = self._extract_json_from_response(response_content)
-            else:
-                logger.error("No content returned from Assistants API")
-                output = self._create_default_empty_structure()
-            
-            # 7. Clean up by deleting the uploaded file
-            try:
-                delete_ok = self.client.files.delete(file.id)
-                logger.info(f"Deleted file: {file.id}, success: {delete_ok}")
-            except Exception as e:
-                logger.warning(f"Error deleting file {file.id}: {e}")
-            
-            return output
-            
-        except Exception as e:
-            logger.error(f"Error processing PDF with Assistants API: {str(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            
-            # Return empty default structure in case of error
-            return self._create_default_empty_structure()
-            
-    async def _get_or_create_assistant(self):
-        """
-        Get or create an assistant for PDF processing.
-        
-        Returns:
-            Assistant object
-        """
-        assistant_name = "Zepto Payment Advice Processor"
-        
-        # List assistants to check if ours exists
-        assistants = self.client.beta.assistants.list(limit=100)
-        
-        for assistant in assistants.data:
-            if assistant.name == assistant_name:
-                logger.info(f"Found existing assistant: {assistant.id}")
-                return assistant
-        
-        # Create a new assistant if not found
-        logger.info("Creating new assistant for PDF processing")
-        assistant = self.client.beta.assistants.create(
-            model="gpt-4o",  # Using GPT-4o which has good PDF understanding
-            name=assistant_name,
-            description="Extracts structured data from payment advice PDFs",
-            instructions="""You are a specialized assistant for extracting financial data from payment advice PDFs.
-            You extract information in a structured JSON format. Be precise with numbers, dates, and references.
-            For Zepto payment advices, pay special attention to separate reference numbers and amounts properly.
-            Always extract both the Meta Table with payment advice metadata and Body Table with line items.
-            
-            Meta Table should include: Settlement Date, Payment Advice Number, Payer's Name, and Payee's Legal Name.
-            Body Table should contain all transaction entries with their details like Doc No, Type of Document,
-            Ref Doc, Amount, etc., maintaining the exact structure as shown in the PDF.
-            
-            IMPORTANT: Make sure reference documents (Ref Doc) are properly extracted without amounts appended to them.
-            Return only JSON data in your response.
-            """,
-            tools=[{"type": "file_search"}]
-        )
-        
-        logger.info(f"Created new assistant: {assistant.id}")
-        return assistant
-    
+
     def _get_prompt_template(self, group_uuid: Optional[str] = None) -> Dict[str, Any]:
         """
         Get the appropriate prompt template for a given group using the factory pattern.
@@ -483,14 +198,6 @@ class LLMExtractor:
         Returns:
             Extracted text from the PDF
         """
-        # Import PyPDF2 here to avoid circular imports
-        try:
-            import PyPDF2
-        except ImportError:
-            logger.warning("PyPDF2 not installed. Installing now...")
-            import subprocess
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2"])
-            import PyPDF2
         
         # Extract text from PDF
         logger.info("Extracting text from PDF...")
@@ -504,30 +211,7 @@ class LLMExtractor:
         logger.info(f"Extracted {len(pdf_text)} characters from PDF")
         return pdf_text
     
-    def _get_prompt_for_group(self, group_uuid: str) -> str:
-        """
-        Get the appropriate prompt template for the given group UUID using factory pattern.
-        
-        Args:
-            group_uuid: The group UUID to get a prompt for
-            
-        Returns:
-            The prompt template to use
-        """
-        try:
-            # Get the appropriate processor for this group UUID
-            processor = self.group_processor_factory.get_processor(group_uuid)
-            template = processor.get_prompt_template()
-            logger.info(f"Using group-specific prompt template for group_uuid={group_uuid} from {processor.__class__.__name__}")
-            return template
-        except Exception as e:
-            logger.warning(f"Error getting prompt for group {group_uuid}: {str(e)}")
-            # Fall back to default processor if anything goes wrong
-            processor = self.group_processor_factory.get_processor(None)
-            template = processor.get_prompt_template()
-            logger.info(f"Using default prompt template (group_uuid={group_uuid})")
-            return template
-    
+
     def _extract_json_from_response(self, response_text: str) -> Dict[str, Any]:
         """
         Extract JSON from LLM response text.
@@ -893,172 +577,3 @@ class LLMExtractor:
             logger.error(f"Traceback: {traceback.format_exc()}")
             # Return the original output to avoid making the situation worse
             return processed_output
-            
-    async def process_attachment_for_payment_advice(self, email_text_content: str, attachment_data: Dict[str, Any], group_uuid: str = None) -> Dict[str, Any]:
-        """
-        Process a single attachment as a payment advice.
-        
-        This method provides compatibility with the EmailProcessor interface, which
-        expects this method signature from the LLM extractor.
-        
-        Args:
-            email_text_content: Text content of the email
-            attachment_data: Dictionary containing attachment data
-            
-        Returns:
-            Processed payment advice data in the format expected by PaymentProcessor
-        """
-        try:
-            # Extract the attachment text
-            attachment_text = attachment_data.get("text_content", "")
-            if not attachment_text:
-                logger.warning("No text content in attachment, using email body instead")
-                attachment_text = email_text_content
-                email_text_content = ""
-                
-            # Get filename for logging
-            attachment_filename = attachment_data.get("filename", "unknown")
-            logger.info(f"Processing attachment {attachment_filename} with real LLM using openai")
-            
-            # Use the group_uuid that was provided from the two-step process
-            # If no group_uuid was provided, then try to detect one
-            if group_uuid:
-                logger.info(f"Using provided group_uuid from two-step process: {group_uuid}")
-            else:
-                logger.info(f"No group_uuid provided, attempting to detect one")
-                # Try to detect the group from text
-                if self.dao:
-                    # Use text from both email body and attachment to improve detection
-                    combined_text = f"{email_text_content} {attachment_text}"
-                    payee_name = self._extract_potential_payee_name(combined_text)
-                    
-                    if payee_name:
-                        logger.info(f"Pre-detected payee name: {payee_name}")
-                        # Hard-code Amazon group for now, just like MockLLMExtractor
-                        # In the future, we would implement _get_group_uuid_for_legal_entity
-                        if "amazon" in payee_name.lower() or "kwick" in payee_name.lower() or "clicktech" in payee_name.lower():
-                            group_uuid = "group-amazon-12345"
-                        logger.info(f"Pre-detected group UUID: {group_uuid}")
-            
-            # Process the document with the LLM using the determined group_uuid
-            output = await self.process_document(
-                document_text=attachment_text,
-                email_body=email_text_content,
-                group_uuid=group_uuid
-            )
-            
-            # Log raw LLM output format for debugging
-            logger.info(f"Raw LLM output meta_table: {output.get('meta_table', {})}")
-            
-            # Post-processing for expected format
-            from src.external_apis.llm.utils import convert_llm_output_to_processor_format
-            processed_output = await convert_llm_output_to_processor_format(output)
-            
-            # Log processed output format for debugging
-            logger.info(f"Processed LLM output metaTable: {processed_output.get('metaTable', {})}")
-            logger.info(f"Processed LLM output top-level meta fields: paymentAdviceNumber={processed_output.get('paymentAdviceNumber')}, payersLegalName={processed_output.get('payersLegalName')}, payeesLegalName={processed_output.get('payeesLegalName')}")
-            
-            # Add legal entity and group UUIDs if detected
-            legal_entity_uuid = await self.detect_legal_entity_from_output(output)
-            group_uuid = await self.detect_group_from_output(output)
-            
-            logger.info(f"Detected legal_entity_uuid={legal_entity_uuid}, group_uuid={group_uuid} from output")
-            
-            if legal_entity_uuid:
-                processed_output["legal_entity_uuid"] = legal_entity_uuid
-                
-            if group_uuid:
-                processed_output["group_uuid"] = group_uuid
-                
-            return processed_output
-            
-        except Exception as e:
-            logger.error(f"Error processing attachment with LLM: {str(e)}")
-            raise
-    
-    async def detect_legal_entity_from_output(self, output: Dict[str, Any]) -> Optional[str]:
-        """
-        Detect legal entity UUID from the LLM output.
-        
-        Args:
-            output: The LLM-processed output
-            
-        Returns:
-            Legal entity UUID if found, None otherwise
-        """
-        if not self.dao:
-            logger.warning("No DAO provided, cannot detect legal entity")
-            return None
-            
-        try:
-            # Get payer legal name from meta_table
-            payer_name = output.get("meta_table", {}).get("payer_legal_name")
-            if not payer_name:
-                logger.warning("No payer_legal_name found in LLM output")
-                return None
-                
-            logger.info(f"Detecting legal entity for payer_name: {payer_name}")
-            
-            # Query legal entity table to find matching entity
-            legal_entities = await self.dao.query_documents(
-                "legal_entity",
-                [("legal_entity_name", "==", payer_name)]
-            )
-            
-            if not legal_entities or len(legal_entities) == 0:
-                logger.warning(f"No legal entity found for payer name: {payer_name}")
-                return None
-                
-            legal_entity = legal_entities[0]
-            legal_entity_uuid = legal_entity.get("legal_entity_uuid")
-            group_uuid = legal_entity.get("group_uuid")
-            
-            logger.info(f"Found legal entity UUID {legal_entity_uuid} with group UUID {group_uuid} for payer {payer_name}")
-            return legal_entity_uuid
-            
-        except Exception as e:
-            logger.error(f"Error detecting legal entity: {str(e)}")
-            return None
-            
-    async def detect_group_from_output(self, output: Dict[str, Any]) -> Optional[str]:
-        """
-        Detect group UUID from the LLM output.
-        
-        Args:
-            output: The LLM-processed output
-            
-        Returns:
-            Group UUID if found, None otherwise
-        """
-        if not self.dao:
-            logger.warning("No DAO provided, cannot detect group")
-            return None
-            
-        try:
-            # Get payer legal name from meta_table
-            payer_name = output.get("meta_table", {}).get("payer_legal_name")
-            if not payer_name:
-                logger.warning("No payer_legal_name found in LLM output")
-                return None
-                
-            logger.info(f"Detecting group for payer_name: {payer_name}")
-            
-            # Query legal entity table to find matching entity
-            legal_entities = await self.dao.query_documents(
-                "legal_entity",
-                [("legal_entity_name", "==", payer_name)]
-            )
-            
-            if not legal_entities or len(legal_entities) == 0:
-                logger.warning(f"No legal entity found for payer name: {payer_name}")
-                return None
-                
-            legal_entity = legal_entities[0]
-            group_uuid = legal_entity.get("group_uuid")
-            
-            logger.info(f"Found group UUID {group_uuid} for payer {payer_name}")
-            return group_uuid
-            
-        except Exception as e:
-            logger.error(f"Error detecting group: {str(e)}")
-            return None

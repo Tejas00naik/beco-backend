@@ -230,7 +230,15 @@ class SheetsService:
                 body={"values": values}
             ).execute()
             
-            logger.info(f"Added {len(values)} new entries to monitoring sheet")
+            # Enhanced logging with detailed row information
+            end_row = next_row + len(values) - 1
+            row_range = f"A{next_row}:J{end_row}"
+            sheet_url = f"https://docs.google.com/spreadsheets/d/{self.sheet_id}/edit#gid=0"
+            
+            for i, entry in enumerate(entries):
+                row_num = next_row + i
+                pa_id = entry.get("payment_advice_uuid", "unknown")
+                logger.info(f"Sheet update: Row {row_num} updated with payment advice {pa_id}")
             return True
             
         except HttpError as error:

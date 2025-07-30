@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-from src.external_apis.gcp.gmail_reader import GmailReader
+import os
+import sys
+from pathlib import Path
 from datetime import datetime, timedelta
+
+# Add project root to Python path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from src.external_apis.gcp.gmail_reader import GmailReader
 
 def main():
     # Initialize the Gmail reader
@@ -23,6 +30,9 @@ def main():
         print(f"From: {email.get('sender_mail')}")
         print(f"Received at: {email.get('received_at')}")
         print(f"Gmail ID: {email.get('gmail_id')}")
+        # Add historyId information if available
+        history_id = email.get('history_id', 'Not available')
+        print(f"History ID: {history_id}")
         print("-" * 50)
     
     # Now check for ALL emails with no time filter

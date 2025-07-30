@@ -33,6 +33,7 @@ class LegalEntityRepository:
             return []
             
         try:
+            # Fetch legal entities directly from Firestore
             legal_entities = await self.dao.query_documents("legal_entity", [])
             logger.info(f"Fetched {len(legal_entities)} legal entities from Firestore")
             
@@ -44,10 +45,19 @@ class LegalEntityRepository:
                     # Store in cache with lowercase key for case-insensitive lookup
                     self._cache[name.lower()] = entity
                     
+                # Also cache alternate names if present
+                alternate_names = entity.get("alternate_names", [])
+                for alt_name in alternate_names:
+                    if alt_name and isinstance(alt_name, str):
+                        self._cache[alt_name.lower()] = entity
+                    
             self._entities_loaded = True
+            logger.info(f"Legal entities loaded into cache with {len(self._cache)} total keys (including alternate names)")
             return legal_entities
         except Exception as e:
-            logger.error(f"Error fetching legal entities: {str(e)}")
+            logger.error(f"Error in fetch_all_legal_entities: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return []
     
     async def get_legal_entity_by_name(self, name: str) -> Optional[Dict[str, Any]]:
@@ -77,4 +87,13 @@ class LegalEntityRepository:
             logger.info(f"Found exact match for '{name}'")
             return entity
             
+        # Try fuzzy matching if exact match fails
+        logger.info(f"No exact match for '{name}', trying fuzzy matching")
+        for cache_name, cache_entity in self._cache.items():
+            # Check if the name contains or is contained by any cached name
+            if normalized_name in cache_name or cache_name in normalized_name:
+                logger.info(f"Found fuzzy match: '{name}' ~ '{cache_entity.get('legal_entity_name')}' (matched on '{cache_name}')")
+                return cache_entity
+                
+        logger.warning(f"No match found for legal entity name: '{name}'")
         return None

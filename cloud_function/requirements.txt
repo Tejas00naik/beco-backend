@@ -1,20 +1,20 @@
-# Core dependencies for Gmail PubSub Cloud Function
-google-cloud-firestore==2.13.1
+# Updated requirements.txt for Gmail PubSub Cloud Function
+aiohttp==3.8.5
 google-api-python-client==2.92.0
 google-auth-httplib2==0.1.0
 google-auth-oauthlib==1.0.0
-python-dotenv==1.0.0
-openai>=1.0.0
+google-cloud-firestore==2.13.1
+google-cloud-storage>=2.0.0
 langchain-core>=0.1.0
 langchain-openai>=0.1.0
+openai>=1.0.0
 pandas>=2.0.0
-
-# Google Cloud dependencies
-google-cloud-storage>=2.0.0
-
-# Async support
-aiohttp==3.8.5
-
-# Additional dependencies that might be required
 pydantic>=2.0.0
+PyCryptodome>=3.0.0
+PyPDF2>=3.0.0
+python-dotenv==1.0.0
 requests>=2.31.0
+
+# Adding PyMuPDF (fitz module) which was present in our previous testing
+PyMuPDF==1.22.5
+openpyxl==3.1.5

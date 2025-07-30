@@ -4,7 +4,9 @@ import logging
 import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-
+import os
+import tempfile
+import fitz  # PyMuPDF
 # Import models
 from src.models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
 
@@ -139,11 +141,7 @@ class EmailProcessor:
                     
                     # Extract text content from PDF if needed
                     if 'pdf' in content_type.lower() and 'text_content' not in attachment:
-                        try:
-                            import os
-                            import tempfile
-                            import fitz  # PyMuPDF
-                            
+                        try:                        
                             logger.info(f"Extracting text from PDF attachment using PyMuPDF: {attachment_filename}")
                             
                             # Create a temporary file to save the PDF
@@ -207,10 +205,7 @@ class EmailProcessor:
                                 except:
                                     pass
                         except ImportError:
-                            logger.warning("PyMuPDF not installed. Installing now...")
-                            import subprocess
-                            import sys
-                            subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf"])
+                            logger.warning("PyMuPDF not installed. PDF text extraction will be skipped.")
                             logger.warning("Failed to extract text from PDF attachment due to missing dependencies")
                     
                     # Extract text content from attachment if needed (e.g., PDF)

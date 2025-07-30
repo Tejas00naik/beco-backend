@@ -46,6 +46,7 @@ class SettlementStatus(str, enum.Enum):
 
 class ProcessingStatus(str, enum.Enum):
     PARSED = "parsed"
+    PENDING = "pending"
     SAP_PUSHED = "sap_pushed"
     ERROR = "error"
 

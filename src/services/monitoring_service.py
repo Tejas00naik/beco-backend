@@ -185,10 +185,18 @@ class MonitoringService:
                 logger.info(f"DEBUG - Created entry for sheet: {json.dumps(entry, default=str)}")
             
             # Update the sheet
+            logger.info(f"Updating monitoring sheet with {len(entries)} entries for email log {email_log_uuid}")
+            
+            # Log detailed entry information before sheet update
+            for i, entry in enumerate(entries):
+                pa_id = entry.get("payment_advice_uuid", "unknown")
+                subject = entry.get("email_subject", "unknown")
+                logger.info(f"Sheet update preparation: Entry {i+1}/{len(entries)}: PA_ID={pa_id}, Subject={subject}")
+            
             success = self.sheets_service.add_monitoring_entries(entries)
             
             if success:
-                logger.info(f"Successfully updated monitoring sheet for email log {email_log_uuid}")
+                logger.info(f"Successfully updated monitoring sheet for email log {email_log_uuid} with {len(entries)} entries")
             else:
                 logger.error(f"Failed to update monitoring sheet for email log {email_log_uuid}")
                 
