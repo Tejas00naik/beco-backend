@@ -47,9 +47,14 @@ mock_data/processed_emails.json
 *.swp
 *.swo
 
+# Cloud Function deployment
+cloud_function/deployment/
+
 # OS specific
 .DS_Store
 Thumbs.db
 
 # Output directory for logs and temporary files
 output/
+
+Payment_Advice_2000060222 (1).PDF

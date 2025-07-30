@@ -61,7 +61,17 @@ class GmailReader:
         self.credentials_path = credentials_path
         self.token_path = token_path or os.path.join(os.getcwd(), "token.json")
         self.mailbox_id = mailbox_id
-        self.data_path = data_path or os.path.join(os.getcwd(), "gmail_data")
+        
+        # Use /tmp for Cloud Function compatibility
+        if os.environ.get("FUNCTION_TARGET"):
+            # Running in Cloud Functions environment
+            self.data_path = data_path or os.path.join("/tmp", "gmail_data")
+            logger.info(f"Running in Cloud Functions environment, using temp directory: {self.data_path}")
+        else:
+            # Running in local environment
+            self.data_path = data_path or os.path.join(os.getcwd(), "gmail_data")
+            logger.info(f"Running in local environment, using directory: {self.data_path}")
+            
         self.service = None
         
         # Create data directory if it doesn't exist
@@ -76,6 +86,7 @@ class GmailReader:
         """Authenticate with Gmail API and create service."""
         creds = None
         force_new_token = False
+        is_cloud_function = os.environ.get("FUNCTION_TARGET") is not None
         
         # Check if token file exists and load it
         if os.path.exists(self.token_path):
@@ -85,7 +96,9 @@ class GmailReader:
                 )
             except Exception as e:
                 logger.warning(f"Error loading credentials: {str(e)}")
-                # If there's an error loading credentials, force new token
+                if is_cloud_function:
+                    raise Exception(f"Failed to load token file in Cloud Function environment: {str(e)}")
+                # If there's an error loading credentials in local env, force new token
                 force_new_token = True
         
         # If credentials don't exist, are invalid, or we need to force new token
@@ -94,13 +107,21 @@ class GmailReader:
             if creds and creds.expired and creds.refresh_token and not force_new_token:
                 try:
                     creds.refresh(Request())
+                    # In Cloud Functions, we can't save the refreshed token
+                    # Just use the refreshed credentials in memory
+                    if not is_cloud_function:
+                        # Save the refreshed token locally
+                        with open(self.token_path, 'w') as token:
+                            token.write(creds.to_json())
                 except Exception as e:
                     logger.warning(f"Error refreshing token (possibly due to scope change): {str(e)}")
-                    # If refresh fails, force new token
+                    if is_cloud_function:
+                        raise Exception(f"Failed to refresh token in Cloud Function environment: {str(e)}")
+                    # If refresh fails in local env, force new token
                     force_new_token = True
             
-            # If we need a completely new token
-            if not creds or force_new_token:
+            # If we need a completely new token - this can only happen in local environment
+            if (not creds or force_new_token) and not is_cloud_function:
                 logger.info("Getting new Gmail API token with updated scopes")
                 # First try to delete the existing token file if it exists
                 if os.path.exists(self.token_path):
@@ -115,10 +136,13 @@ class GmailReader:
                     self.credentials_path, SCOPES
                 )
                 creds = flow.run_local_server(port=0)
-            
-            # Save the credentials for the next run
-            with open(self.token_path, 'w') as token:
-                token.write(creds.to_json())
+                
+                # Save the credentials for the next run
+                with open(self.token_path, 'w') as token:
+                    token.write(creds.to_json())
+            elif (not creds or force_new_token) and is_cloud_function:
+                # In Cloud Functions, if we can't load or refresh token, we can't get a new one
+                raise Exception("Token is invalid/expired in Cloud Function environment and cannot be refreshed. Generate a new token locally and redeploy.")
         
         # Create the Gmail API service
         self.service = build('gmail', 'v1', credentials=creds)
@@ -391,41 +415,6 @@ class GmailReader:
                 logger.error(traceback.format_exc())
                 return None
                 
-    def check_and_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
-        """
-        Check if Gmail API watch needs to be refreshed and refresh if needed.
-        This is a synchronous wrapper for async_check_and_refresh_watch.
-        
-        Args:
-            email_address: Email address to set up the watch for
-            dao: Firestore DAO instance for storage (optional)
-            pubsub_topic: Full PubSub topic name (projects/PROJECT_ID/topics/TOPIC_NAME)
-                          If not provided, will use default format with vaulted-channel-462118-a5
-        """
-        import asyncio
-        
-        try:
-            # Check if we're already in an event loop
-            try:
-                asyncio.get_running_loop()
-                in_event_loop = True
-            except RuntimeError:
-                in_event_loop = False
-            
-            if in_event_loop:
-                logger.warning("Called sync check_and_refresh_watch from within an event loop - this is not recommended")
-                logger.warning("Consider using async_check_and_refresh_watch instead")
-                # Can't use asyncio.run in an event loop - method must be called from async context
-                # Return without performing the check, to avoid errors
-                return
-                
-            # If we're not in an event loop, we can use asyncio.run
-            asyncio.run(self.async_check_and_refresh_watch(email_address, dao, pubsub_topic))
-        except Exception as e:
-            logger.error(f"Error in check_and_refresh_watch: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
     async def async_check_and_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
         """
         Async version of check_and_refresh_watch.
@@ -495,44 +484,6 @@ class GmailReader:
             
         logger.info(f"========== GMAIL WATCH CHECK COMPLETED for {email_address} ==========\n")
     
-    def _refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
-        """
-        Synchronous wrapper for async_refresh_watch.
-        Refresh the Gmail API watch subscription.
-        
-        Args:
-            email_address: Email address to set up the watch for
-            dao: Firestore DAO instance for storage (optional)
-            pubsub_topic: Full PubSub topic name (optional)
-            
-        Returns:
-            bool: True if refresh was successful, False otherwise
-        """
-        import asyncio
-        
-        try:
-            # Check if we're already in an event loop
-            try:
-                asyncio.get_running_loop()
-                in_event_loop = True
-            except RuntimeError:
-                in_event_loop = False
-            
-            if in_event_loop:
-                logger.warning("Called sync _refresh_watch from within an event loop - this is not recommended")
-                logger.warning("Consider using async_refresh_watch instead")
-                # Can't use asyncio.run in an event loop - method must be called from async context
-                # Return without performing the refresh, to avoid errors
-                return False
-                
-            # If we're not in an event loop, we can use asyncio.run
-            return asyncio.run(self.async_refresh_watch(email_address, dao, pubsub_topic))
-        except Exception as e:
-            logger.error(f"Error in _refresh_watch: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-            
     async def async_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
         """
         Async version of _refresh_watch.
@@ -601,3 +552,104 @@ class GmailReader:
             # Continue execution - don't fail just because watch refresh failed
         
         logger.info(f"========== GMAIL WATCH REFRESH COMPLETED for {email_address} ==========\n")
+        
+    def get_most_recent_email_id_from_history(self, history_id):
+        """
+        Get the most recent email message ID based on a history ID.
+        
+        Args:
+            history_id: Gmail history ID to find the most recent email message
+            
+        Returns:
+            str: The message ID of the most recent email, or None if not found
+        """
+        logger.info(f"Getting most recent message ID from history ID: {history_id}")
+        try:
+            # Call the history.list API
+            response = self.service.users().history().list(
+                userId=self.mailbox_id,
+                startHistoryId=history_id,
+                maxResults=1,  # We only need the most recent message
+                historyTypes=['messageAdded']
+            ).execute()
+            
+            # Extract the most recent message ID from the history
+            history_records = response.get('history', [])
+            
+            # Look for the most recent message
+            for record in history_records:
+                messages_added = record.get('messagesAdded', [])
+                if messages_added:  # If there are messages in this record
+                    # Get the first (most recent) message
+                    message_data = messages_added[0]
+                    message = message_data.get('message', {})
+                    message_id = message.get('id')
+                    if message_id:
+                        logger.info(f"Found most recent message ID: {message_id} from history")
+                        return message_id
+            
+            # If no messages found in history records, try listing messages
+            logger.info("No messages found in history, trying to list recent messages")
+            response = self.service.users().messages().list(
+                userId=self.mailbox_id,
+                maxResults=1  # Just get the most recent
+            ).execute()
+            
+            messages = response.get('messages', [])
+            if messages and len(messages) > 0:
+                message_id = messages[0].get('id')
+                logger.info(f"Found most recent message ID: {message_id} from messages list")
+                return message_id
+            
+            logger.warning("No recent messages found")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting most recent message ID: {str(e)}")
+            return None
+    
+    async def get_history_changes(self, start_history_id, max_results=100):
+        """
+        Get message changes using Gmail history.list API.
+        
+        Args:
+            start_history_id: History ID to start fetching changes from
+            max_results: Maximum number of history records to fetch
+            
+        Returns:
+            List of message IDs added since the start_history_id
+        """
+        logger.info(f"Fetching Gmail history changes since history ID: {start_history_id}")
+        added_message_ids = []
+        try:
+            # Call the history.list API
+            response = self.service.users().history().list(
+                userId=self.mailbox_id,
+                startHistoryId=start_history_id,
+                maxResults=max_results,
+                historyTypes=['messageAdded']
+            ).execute()
+            
+            # Extract message IDs from the history
+            logger.info("Processing history records")
+            history_records = response.get('history', [])
+            
+            for record in history_records:
+                messages_added = record.get('messagesAdded', [])
+                for message_data in messages_added:
+                    message = message_data.get('message', {})
+                    message_id = message.get('id')
+                    if message_id:
+                        added_message_ids.append(message_id)
+            
+            if added_message_ids:
+                logger.info(f"Found {len(added_message_ids)} new messages in history")
+            else:
+                logger.info("No new messages found in history")
+                
+            return added_message_ids
+        except Exception as e:
+            logger.error(f"Error fetching Gmail history: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []

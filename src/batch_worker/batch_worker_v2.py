@@ -25,8 +25,7 @@ from src.config import (
 
 # Import models
 from src.models.schemas import (
-    PaymentAdviceLine, PaymentAdvice, PaymentAdviceStatus, 
-    EmailProcessingLog, ProcessingStatus, EmailLog
+    EmailProcessingLog, ProcessingStatus
 )
 
 # Import components
@@ -68,7 +67,8 @@ class BatchWorkerV2:
                  use_gmail: bool = False,
                  gmail_credentials_path: str = None,
                  since_timestamp: Optional[datetime] = None,
-                 last_n_emails: Optional[int] = None):
+                 last_n_emails: Optional[int] = None,
+                 token_path: str = None):
         """
         Initialize the batch worker v2.
         
@@ -80,6 +80,7 @@ class BatchWorkerV2:
             gmail_credentials_path: Path to Gmail API credentials
             since_timestamp: Optional datetime to start processing from
             last_n_emails: Optional limit for number of emails to process
+            token_path: Optional path to OAuth token.json file
         """
         self.is_test = is_test
         self.mailbox_id = mailbox_id
@@ -103,7 +104,8 @@ class BatchWorkerV2:
                 raise ImportError("Gmail adapter was requested but dependencies are not available")
                 
             self.email_reader = GmailReader(
-                credentials_path=gmail_credentials_path or DEFAULT_GMAIL_CREDENTIALS_PATH
+                credentials_path=gmail_credentials_path or DEFAULT_GMAIL_CREDENTIALS_PATH,
+                token_path=token_path  # Pass token_path to GmailReader
             )
             logger.info(f"Using GmailReader with credentials from {gmail_credentials_path}")
         else:
@@ -112,13 +114,7 @@ class BatchWorkerV2:
             logger.warning("Email processing will use mock data - this should only be used for testing")
             self.email_reader = MockEmailReader()
             logger.info("Using MockEmailReader for testing only")
-        
-        # Initialize services
-        # Import repositories here to avoid circular imports
-        from src.repositories import (
-            LegalEntityRepository, 
-            PaymentAdviceRepository
-        )
+
         
         # Initialize repositories (all repos needed for payment_advice creation)
         self.legal_entity_repo = LegalEntityRepository(self.dao)
@@ -150,14 +146,13 @@ class BatchWorkerV2:
         # Initialize Monitoring Service
         self.monitoring_service = MonitoringService(dao=self.dao)
         
-        # Initialize the payment processing service
-        self.payment_service = PaymentProcessingService(
-            self.payment_advice_repo,
-            None,  # No invoice repo for V2
-            None,  # No other_doc repo for V2
-            None   # No settlement repo for V2
+        # Initialize the payment processing service V2 for Zepto (no legacy repos)
+        from src.services.payment_processing_service_v2 import PaymentProcessingServiceV2
+        self.payment_service = PaymentProcessingServiceV2(
+            payment_advice_repo=self.payment_advice_repo,
+            dao=self.dao  # Pass DAO for direct payment advice line operations
         )
-        logger.info("Initialized PaymentProcessingService for Zepto-only processing")
+        logger.info("Initialized PaymentProcessingServiceV2 for Zepto-only processing")
         
         from src.services.legal_entity_lookup import LegalEntityLookupService
         self.legal_entity_lookup = LegalEntityLookupService(self.dao)
@@ -197,14 +192,28 @@ class BatchWorkerV2:
             # Import constants for LLM output keys
             from src.external_apis.llm.constants import LLM_LEGAL_ENTITY_UUID_KEY, LLM_GROUP_UUIDS_KEY
             
+            # Extract legal entity information from LLM output
+            legal_entity_uuid = llm_output.get(LLM_LEGAL_ENTITY_UUID_KEY)
+            group_uuids = llm_output.get(LLM_GROUP_UUIDS_KEY, [])
+            
+            # Enhanced logging for legal entity information
+            logger.info(f"Legal entity information from LLM output:")
+            logger.info(f"  - Legal entity UUID: {legal_entity_uuid or 'Not detected'}")
+            logger.info(f"  - Group UUIDs: {group_uuids or ['None']}")
+            
+            # If legal entity is not detected, try to detect it with the lookup service
+            if not legal_entity_uuid:
+                raise ValueError("Legal entity UUID not detected from LLM output")
+            
             # Use payment service to process LLM output with correct parameter order
             payment_advice_uuid = await self.payment_service.create_payment_advice(
                 email_log_uuid=email_log_uuid,
-                legal_entity_uuid=llm_output.get(LLM_LEGAL_ENTITY_UUID_KEY),
-                group_uuids=llm_output.get(LLM_GROUP_UUIDS_KEY, []),
+                legal_entity_uuid=legal_entity_uuid,
+                group_uuids=group_uuids,
                 llm_output=llm_output
             )
             logger.info(f"Created payment advice {payment_advice_uuid} from LLM output for email {email_log_uuid}")
+            logger.info(f"Payment advice created with legal_entity_uuid={legal_entity_uuid}, group_uuids={group_uuids}")
             return payment_advice_uuid
         except Exception as e:
             logger.error(f"Error creating payment advice from LLM output: {str(e)}")
@@ -228,7 +237,7 @@ class BatchWorkerV2:
         processing_log = EmailProcessingLog(
             email_log_uuid=email_id,
             run_id=self.batch_manager.batch_run.run_id,
-            processing_status=ProcessingStatus.PARSED,  # Initially set to PARSED (will be updated)
+            processing_status=ProcessingStatus.PENDING,  # Initially set to PENDING (will be updated)
             error_msg=None
         )
         
@@ -323,90 +332,43 @@ class BatchWorkerV2:
                 logger.info(f"Added payment_advice_uuid {payment_advice_uuid} to llm_output")
             else:
                 # If payment advice creation failed, generate a UUID for consistency
-                from uuid import uuid4
-                payment_advice_uuid = str(uuid4())
-                llm_output['payment_advice_uuid'] = payment_advice_uuid
-                logger.warning(f"Payment advice creation failed, using generated UUID: {payment_advice_uuid}")
+                logger.error("Payment advice creation failed")
+                raise ValueError("Payment advice creation failed")            
+            # Payment advice lines are already saved by PaymentProcessingServiceV2 during create_payment_advice
             
-            # Save payment advice lines to Firestore if available
-            if 'paymentadvice_lines' in llm_output and llm_output['paymentadvice_lines']:
-                payment_advice_lines = llm_output['paymentadvice_lines']
-                logger.info(f"Found {len(payment_advice_lines)} payment advice lines to save to Firestore")
-                
-                # Save each payment advice line to Firestore
-                from src.models.schemas import PaymentAdviceLine
-                saved_count = 0
-                
-                for line in payment_advice_lines:
-                    try:
-                        # Create a unique UUID for this line
-                        from uuid import uuid4
-                        line_uuid = str(uuid4())
-                        
-                        # Create PaymentAdviceLine object
-                        payment_advice_line = PaymentAdviceLine(
-                            payment_advice_line_uuid=line_uuid,
-                            payment_advice_uuid=payment_advice_uuid,
-                            bp_code=line.get("bp_code"),
-                            gl_code=line.get("gl_code"),
-                            account_type=line.get("account_type"),
-                            customer=line.get("customer"),
-                            doc_type=line.get("doc_type"),
-                            doc_number=line.get("doc_number"),
-                            ref_invoice_no=line.get("ref_invoice_no"),
-                            ref_1=line.get("ref_1"),
-                            ref_2=line.get("ref_2"),
-                            ref_3=line.get("ref_3"),
-                            amount=line.get("amount"),
-                            dr_cr=line.get("dr_cr"),
-                            dr_amt=line.get("dr_amt"),
-                            cr_amt=line.get("cr_amt"),
-                            branch_name=line.get("branch_name") or "Maharashtra"  # Default to Maharashtra if not set
-                        )
-                        
-                        # Save to Firestore
-                        await self.dao.create_payment_advice_line(payment_advice_line)
-                        saved_count += 1
-                        logger.info(f"Saved payment advice line {line_uuid} to Firestore")
-                        
-                    except Exception as line_error:
-                        logger.error(f"Error saving payment advice line to Firestore: {str(line_error)}")
-                        import traceback
-                        logger.error(traceback.format_exc())
-                
-                logger.info(f"Successfully saved {saved_count} out of {len(payment_advice_lines)} payment advice lines to Firestore")
-                
-                # Enrich payment advice lines with BP/GL codes first
-                try:
-                    logger.info(f"Enriching payment advice lines with BP/GL codes for {payment_advice_uuid}")
-                    await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
-                except Exception as enrich_error:
-                    logger.error(f"Error enriching payment advice lines: {str(enrich_error)}")
-                    import traceback
-                    logger.error(f"Account Enrichment Traceback: {traceback.format_exc()}")
-                    # Continue processing - we don't want to fail the entire process for enrichment errors
-                
-                # Generate and upload SAP XLSX file for the payment advice
-                try:
-                    logger.info(f"Generating SAP export for payment advice {payment_advice_uuid}")
-                    url = await self.sap_export_service.process_payment_advice_export(payment_advice_uuid)
-                    if url:
-                        logger.info(f"Successfully generated and uploaded SAP export: {url}")
-                        
-                        # Update email processing log with SAP_PUSHED status
-                        await self.dao.update_document("email_processing_log", email_log_uuid, {
-                            "processing_status": ProcessingStatus.SAP_PUSHED.value,
-                            "sap_doc_num": payment_advice_uuid  # Using payment advice UUID as SAP doc number
-                        })
-                        logger.info(f"Updated email processing log {email_log_uuid} with SAP_PUSHED status")
-                    else:
-                        logger.warning(f"Failed to generate or upload SAP export for payment advice {payment_advice_uuid}")
-                except Exception as sap_error:
-                    logger.error(f"Error generating SAP export: {str(sap_error)}")
-                    import traceback
-                    logger.error(f"SAP Export Traceback: {traceback.format_exc()}")
-                    # Continue processing - we don't want to fail the entire process for SAP export errors
-            else:
+            # Enrich payment advice lines with BP/GL codes first
+            try:
+                logger.info(f"Enriching payment advice lines with BP/GL codes for {payment_advice_uuid}")
+                await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
+            except Exception as enrich_error:
+                logger.error(f"Error enriching payment advice lines: {str(enrich_error)}")
+                import traceback
+                logger.error(f"Account Enrichment Traceback: {traceback.format_exc()}")
+                # Continue processing - we don't want to fail the entire process for enrichment errors
+            
+            # Generate and upload SAP XLSX file for the payment advice
+            try:
+                logger.info(f"Generating SAP export for payment advice {payment_advice_uuid}")
+                url = await self.sap_export_service.process_payment_advice_export(payment_advice_uuid)
+                if url:
+                    logger.info(f"Successfully generated and uploaded SAP export: {url}")
+                    
+                    # Update email processing log with SAP_PUSHED status
+                    await self.dao.update_document("email_processing_log", email_log_uuid, {
+                        "processing_status": ProcessingStatus.SAP_PUSHED.value,
+                        "sap_doc_num": payment_advice_uuid  # Using payment advice UUID as SAP doc number
+                    })
+                    logger.info(f"Updated email processing log {email_log_uuid} with SAP_PUSHED status")
+                else:
+                    logger.warning(f"Failed to generate or upload SAP export for payment advice {payment_advice_uuid}")
+            except Exception as sap_error:
+                logger.error(f"Error generating SAP export: {str(sap_error)}")
+                import traceback
+                logger.error(f"SAP Export Traceback: {traceback.format_exc()}")
+                # Continue processing - we don't want to fail the entire process for SAP export errors
+            
+            # If no payment advice lines found in LLM output
+            if 'paymentadvice_lines' not in llm_output or not llm_output['paymentadvice_lines']:
                 logger.warning("No payment advice lines found in LLM output")
             
             # Update batch run stats
@@ -437,41 +399,7 @@ class BatchWorkerV2:
             self.batch_manager.increment_error_count()
             self.errors += 1
             return False
-    
-    async def process_last_email(self):
-        """Process just the last email for testing."""
-        logger.info("Retrieving last email for Zepto testing...")
-        
-        # Get current timestamp
-        now = datetime.now()
-        
-        # Get emails from the last 24 hours
-        since_timestamp = now - timedelta(days=1)
-        new_emails = self.email_reader.get_unprocessed_emails(since_timestamp)
-        
-        if not new_emails:
-            logger.error("No emails found in the last 24 hours")
-            return False
-            
-        # Sort by received_at in descending order to get most recent emails
-        new_emails.sort(key=lambda x: x.get("received_at", datetime.min), reverse=True)
-        
-        # Get the most recent email
-        last_email = new_emails[0]
-        logger.info(f"Processing last email: {last_email.get('subject', 'No subject')}, received at: {last_email.get('received_at')}")
-        print(f"\n\n=== PROCESSING LATEST EMAIL ===\nSubject: {last_email.get('subject', 'No subject')}\nDate: {last_email.get('received_at')}\n===========================\n\n")
-        
-        # Start batch run
-        await self.start_batch_run()
-        
-        # Process the email
-        success = await self.process_email(last_email)
-        
-        # Finish the batch run
-        await self.finish_batch_run()
-        
-        return success
-    
+
     async def process_single_email(self, email_id: str) -> bool:
         """
         Process a single email by ID (used for PubSub triggered serverless processing).
@@ -510,33 +438,8 @@ class BatchWorkerV2:
                 except Exception as monitor_error:
                     logger.error(f"Error updating monitoring sheet: {str(monitor_error)}")
             
-            # Check and refresh Gmail watch if needed
-            try:
-                # Only attempt to refresh if we're using GmailReader (not MockEmailReader)
-                logger.info(f"Checking if email_reader is GmailReader: {isinstance(self.email_reader, GmailReader)}")
-                if isinstance(self.email_reader, GmailReader):
-                    logger.info(f"Email data keys available: {list(email_data.keys())}")
-                    # Try different fields that might contain the email address
-                    email_address = None
-                    for field in ['to', 'from', 'sender_mail', 'original_sender_mail', 'recipient_mail']:
-                        if field in email_data and email_data[field]:
-                            email_address = email_data[field]
-                            break
-                            
-                    if email_address:
-                        logger.info(f"WATCH CHECK: Found email address for watch refresh: {email_address}")
-                        # Use the new async version of check_and_refresh_watch in async context
-                        logger.info("Using async_check_and_refresh_watch from async context")
-                        await self.email_reader.async_check_and_refresh_watch(email_address, self.dao)
-                    else:
-                        logger.warning("WATCH CHECK: Could not find a valid email address for watch refresh")
-                else:
-                    logger.warning("WATCH CHECK: Not using GmailReader, skipping watch refresh")
-            except Exception as watch_error:
-                logger.error(f"WATCH CHECK: Error checking/refreshing Gmail watch: {str(watch_error)}")
-                import traceback
-                logger.error(f"WATCH CHECK: {traceback.format_exc()}")
-                # Don't fail the entire process due to watch refresh issues
+            # Gmail watch check has been moved to the cloud function for better architectural separation
+            # and to ensure it runs once per cloud function invocation rather than per email processing
                 
             # Finish the batch run
             await self.finish_batch_run()

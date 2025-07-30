@@ -107,13 +107,41 @@ class AccountEnrichmentService:
             List of enriched BP lines
         """
         if not bp_lines:
+            logger.warning("No BP lines to enrich")
             return []
+        
+        logger.info(f"Starting BP line enrichment for legal entity {legal_entity_uuid}, found {len(bp_lines)} BP lines")
             
+        # Check if legal entity exists
+        legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
+        if not legal_entity:
+            logger.error(f"Legal entity not found with UUID: {legal_entity_uuid}")
+        else:
+            logger.info(f"Legal entity exists: {legal_entity.get('name')}")
+        
         # Get the BP account for the legal entity (one query for all BP lines)
+        logger.info(f"Looking up BP account for legal entity {legal_entity_uuid}")
+        
+        # First check for accounts directly
+        accounts = await self.dao.query_documents(
+            "account", 
+            [
+                ("legal_entity_uuid", "==", legal_entity_uuid),
+                ("account_type", "==", "BP")
+            ]
+        )
+        if accounts:
+            logger.info(f"Direct query found {len(accounts)} BP accounts for legal entity {legal_entity_uuid}")
+            for acct in accounts:
+                logger.info(f"Account: {acct.get('account_uuid')}, SAP ID: {acct.get('sap_account_id')}")
+        else:
+            logger.warning(f"No accounts found directly for legal entity {legal_entity_uuid}")
+        
+        # Now try through the repository
         bp_account = await self.account_repo.get_bp_account_by_legal_entity(legal_entity_uuid)
         
         if not bp_account or not bp_account.sap_account_id:
-            logger.warning(f"No BP account or SAP ID found for legal entity {legal_entity_uuid}")
+            logger.warning(f"No BP account or SAP ID found for legal entity {legal_entity_uuid} via repository")
             return bp_lines
             
         bp_code = bp_account.sap_account_id
@@ -123,8 +151,10 @@ class AccountEnrichmentService:
         enriched_lines = []
         for line in bp_lines:
             line["bp_code"] = bp_code
+            logger.info(f"Enriched line {line.get('payment_advice_line_uuid')} with BP code {bp_code}")
             enriched_lines.append(line)
             
+        logger.info(f"Successfully enriched {len(enriched_lines)} BP lines with BP code {bp_code}")
         return enriched_lines
     
     async def enrich_gl_lines(self, gl_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -228,13 +258,18 @@ class AccountEnrichmentService:
                     # Add BP code if present
                     if "bp_code" in line:
                         updates["bp_code"] = line["bp_code"]
+                        logger.info(f"Adding BP code {line['bp_code']} to line {line_uuid}")
+                    else:
+                        logger.warning(f"No BP code found in line {line_uuid} (account type: {line.get('account_type')})")
                         
                     # Add GL code if present
                     if "gl_code" in line:
                         updates["gl_code"] = line["gl_code"]
                         
                     # Update line in Firestore
+                    logger.info(f"Updating line {line_uuid} in Firestore with: {updates}")
                     await self.dao.update_document("paymentadvice_lines", line_uuid, updates)
+                    logger.info(f"Successfully updated line {line_uuid} in Firestore")
                     update_count += 1
                     
                 except Exception as e:
