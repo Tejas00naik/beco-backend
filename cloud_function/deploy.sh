@@ -118,7 +118,7 @@ gcloud functions deploy "${FUNCTION_NAME}" \
     --service-account="${SERVICE_ACCOUNT}" \
     --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
     --no-gen2 \
-    --retry
+    --no-retry
 
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}Cloud Function deployed successfully!${NC}"

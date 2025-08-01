@@ -117,21 +117,21 @@ class SAPExportService:
             payment_date = payment_date.date()
             logger.info(f"Using datetime object directly: {payment_date}")
                 
-        # Map payment date to SAP format YYYY/MM/DD as per example
-        payment_date_str = payment_date.strftime("%Y/%m/%d") if payment_date else ""
+        # Map payment date to SAP format YYYY-MM-DD as requested
+        payment_date_str = payment_date.strftime("%Y-%m-%d") if payment_date else ""
         logger.info(f"Final payment_date_str for SAP format: '{payment_date_str}'")
         
         # If payment_date_str is empty, try a fallback approach
         if not payment_date_str:
             logger.warning("Payment date string is empty, using fallback to current date")
-            payment_date_str = datetime.now().strftime("%Y/%m/%d")
+            payment_date_str = datetime.now().strftime("%Y-%m-%d")
         
         # Add header row - minimal header as per example
         header_row = {
             "Record Type": "H",
             "Series": "JE25/",
-            "Posting Date": datetime.now().strftime("%Y/%m/%d"),
-            "Due Date": datetime.now().strftime("%Y/%m/%d"),
+            "Posting Date": payment_date_str,
+            "Due Date": payment_date_str,
             "Document Date": payment_date_str,
             "Remarks": "",
             "Indicator Code": "",
@@ -175,26 +175,6 @@ class SAPExportService:
                     else:
                         cr_amt = str(abs(float(amount)))
             
-            # Get document type for Reference 3 (in Lines) - format as per example
-            doc_type = line.get("doc_type", "").upper()
-            ref3_value = ""
-            if doc_type == "INVOICE":
-                ref3_value = "INVOICE"
-            elif doc_type == "TDS":
-                ref3_value = "TDS"
-            elif doc_type == "RTV":
-                ref3_value = "RTV"
-            elif doc_type == "CN":
-                ref3_value = "CREDIT NOTE"
-            elif doc_type == "DN":
-                ref3_value = "DEBIT NOTE"
-            elif doc_type == "BR":
-                ref3_value = "BANK RECEIPT"
-            elif doc_type == "SETTLEMENT":
-                ref3_value = "SETTLEMENT"
-            else:
-                ref3_value = doc_type
-            
             # Map payment advice line to SAP format
             sap_row = {
                 "Record Type": "L",
@@ -219,7 +199,7 @@ class SAPExportService:
                 "Branch Name": line.get("branch_name", "MAHARASHTRA").upper(),  # State name in uppercase
                 "Reference 1 (in Lines)": line.get("ref_1", ""),
                 "Reference 2 (in Lines)": line.get("ref_2", ""),
-                "Reference 3 (in Lines)": ref3_value
+                "Reference 3 (in Lines)": line.get("ref_3", "")
             }
             sap_rows.append(sap_row)
             
@@ -260,8 +240,8 @@ class SAPExportService:
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temp_file:
                 temp_file_path = temp_file.name
                 
-            # Write DataFrame to Excel without index
-            df.to_excel(temp_file_path, index=False, engine="openpyxl")
+            # Write DataFrame to Excel without index and without header row
+            df.to_excel(temp_file_path, index=False, header=False, engine="openpyxl")
             
             # Optional: Format numbers to avoid scientific notation
             try:

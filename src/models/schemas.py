@@ -13,13 +13,10 @@ import enum
 
 # Enums
 class PaymentAdviceStatus(str, enum.Enum):
-    NEW = "new"
-    READY = "ready"
-    RECONCILED = "reconciled"
-    FLAGGED = "flagged"
-    PROCESSED = "processed"
-    FETCHED = "fetched"
-    PARTIAL_FETCHED = "partial_fetched"
+    PENDING = "pending"
+    LLM_READ = "llm_read"
+    POST_PROCESSING_COMPLETED = "post_processing_completed"
+    DUMPED_IN_DB = "dumped_in_db"
     ERROR = "error"
 
 
@@ -45,10 +42,11 @@ class SettlementStatus(str, enum.Enum):
 
 
 class ProcessingStatus(str, enum.Enum):
-    PARSED = "parsed"
-    PENDING = "pending"
-    SAP_PUSHED = "sap_pushed"
-    ERROR = "error"
+    EMAIL_RECEIVED = "email_received" 
+    LLM_READ = "llm_read"
+    PARSING_COMPLETED = "parsing_completed" 
+    SAP_EXPORT_GENERATED = "sap_export_generated" 
+    PROCESSING_FAILED = "processing_failed" 
 
 
 class BatchRunStatus(str, enum.Enum):
@@ -161,7 +159,7 @@ class PaymentAdvice(BaseModel):
     payment_advice_number: Optional[str] = None
     payment_advice_date: Optional[date] = None
     payment_advice_amount: Optional[float] = None
-    payment_advice_status: PaymentAdviceStatus = PaymentAdviceStatus.NEW
+    payment_advice_status: PaymentAdviceStatus = PaymentAdviceStatus.PENDING
     payer_name: Optional[str] = None
     payee_name: Optional[str] = None
 
@@ -228,7 +226,7 @@ class BatchRun(BaseModel):
 class EmailProcessingLog(BaseModel):
     email_log_uuid: str = ""
     run_id: str = ""
-    processing_status: ProcessingStatus = ProcessingStatus.PARSED
+    processing_status: ProcessingStatus = ProcessingStatus.EMAIL_RECEIVED
     sap_doc_num: Optional[str] = None
     error_msg: Optional[str] = None
 

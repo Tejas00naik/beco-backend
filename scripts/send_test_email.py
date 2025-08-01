@@ -14,6 +14,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 
+PATH="/Users/macbookpro/RECOCENT/beco-backend/Payment_Advice_2000016719.PDF"
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -66,7 +67,7 @@ async def send_test_email(gmail_reader, subject=None, recipient=None, pdf_path=N
     
     # Default PDF path if not specified
     if not pdf_path:
-        pdf_path = "/Users/macbookpro/RECOCENT/beco-backend/Payment_Advice_2000060222 (1).PDF"
+        pdf_path = PATH
     
     # Create a test email with a PDF attachment
     try:
@@ -117,7 +118,7 @@ async def main():
     parser.add_argument("--client-secret", default="./secrets/email-client-secret.json", help="Path to Gmail client secret file")
     parser.add_argument("--recipient", default="paymentadvice@beco.co.in", help="Email recipient")
     parser.add_argument("--subject", default=None, help="Email subject line")
-    parser.add_argument("--pdf", default="/Users/macbookpro/RECOCENT/beco-backend/Payment_Advice_2000060222 (1).PDF", help="Path to PDF attachment")
+    parser.add_argument("--pdf", default=PATH, help="Path to PDF attachment")
     args = parser.parse_args()
     
     # Normalize paths

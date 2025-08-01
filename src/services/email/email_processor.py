@@ -111,7 +111,7 @@ class EmailProcessor:
             processing_log = EmailProcessingLog(
                 email_log_uuid=email_log.email_log_uuid,
                 run_id="",  # Will be set by the BatchWorker later
-                processing_status=ProcessingStatus.PARSED
+                processing_status=ProcessingStatus.EMAIL_RECEIVED
             )
             
             # Add processing log to Firestore
@@ -297,9 +297,9 @@ class EmailProcessor:
             logger.info(f"Successfully processed {processed_attachments}/{len(attachments)} attachments with LLM")
             
             # Update processing log status
-            processing_log.processing_status = ProcessingStatus.PARSED
+            processing_log.processing_status = ProcessingStatus.LLM_READ
             await self.dao.update_document("email_processing_log", doc_id, 
-                                         {"processing_status": ProcessingStatus.PARSED})
+                                         {"processing_status": ProcessingStatus.LLM_READ})
             
             logger.info(f"Successfully processed email {email_log.email_log_uuid}")
             return email_log.email_log_uuid, llm_output
@@ -314,7 +314,7 @@ class EmailProcessor:
                 processing_log = EmailProcessingLog(
                     email_log_uuid=error_email_uuid,
                     run_id="",  # Will be set by BatchWorker
-                    processing_status=ProcessingStatus.ERROR,
+                    processing_status=ProcessingStatus.PROCESSING_FAILED,
                     error_msg=str(e)
                 )
                 

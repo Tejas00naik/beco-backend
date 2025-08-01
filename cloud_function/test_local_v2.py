@@ -11,6 +11,7 @@ import json
 import base64
 import traceback
 import logging
+import argparse
 from pathlib import Path
 
 # Configure logging
@@ -26,48 +27,55 @@ sys.path.append(str(Path(__file__).parent.parent))
 # Import cloud function's async implementation directly
 from cloud_function.main import _async_process_pubsub_message
 
-# Create a mock PubSub event with message ID
-def create_mock_event(message_id=None, history_id=None):
+# Parse command line arguments
+def parse_args():
+    parser = argparse.ArgumentParser(description='Test the Cloud Function locally')
+    parser.add_argument('--history-id', help='Gmail history ID to process', required=True)
+    parser.add_argument('--email', help='Email address to use', default='paymentadvice@beco.co.in')
+    return parser.parse_args()
+
+# Create a mock PubSub event with history ID
+def create_mock_event(history_id=None, email_address="paymentadvice@beco.co.in"):
     """Create a mock PubSub event for testing"""
     
     # Create a properly formatted Gmail notification
-    # Gmail push notifications follow this format:
+    # Real Gmail push notifications through Pub/Sub have this format in production:
     # {
     #   "message": {
-    #     "data": base64-encoded-json
-    #   }
+    #     "data": "base64-encoded-json",
+    #     "messageId": "pub-sub-message-id",
+    #     "publishTime": "timestamp"
+    #   },
+    #   "subscription": "projects/project-id/subscriptions/subscription-name"
     # }
     # 
-    # The decoded data should be a JSON object with the following fields:
+    # The actual Gmail notification data (after base64 decoding) is:
     # {
-    #   "emailAddress": "example@gmail.com",
-    #   "historyId": "12345"
+    #   "emailAddress": "paymentadvice@beco.co.in",
+    #   "historyId": "7922"
     # }
-    # And optionally it may include a messageId field
     
-    # Create the notification data
-    data = {
-        "emailAddress": "tnaik4747@gmail.com"  # This is the email we used earlier
+    # Create the notification data - standard Gmail notification format
+    notification_data = {
+        "emailAddress": email_address
     }
     
-    # Add message_id if provided
-    if message_id:
-        data["messageId"] = message_id
-        
     # Add history_id (either provided or default)
+    # Use 7922 as default since we know there are messages after this ID
     if history_id:
-        data["historyId"] = history_id
+        notification_data["historyId"] = history_id
     else:
-        data["historyId"] = "12345"
+        notification_data["historyId"] = "7922" # A known history ID with messages after it
     
     # Convert data to JSON string and print for debugging
-    json_data = json.dumps(data)
+    json_data = json.dumps(notification_data)
     logger.info(f"Created mock Gmail notification with data: {json_data}")
     
-    # Base64 encode the data as required by Cloud Functions
+    # Base64 encode the Gmail notification data
     base64_encoded_data = base64.b64encode(json_data.encode('utf-8')).decode('utf-8')
     
-    # Create the mock event with properly encoded data in PubSub format
+    # Create a mock PubSub event that more closely matches production structure
+    # But we simplify it to just what our Cloud Function actually needs
     mock_event = {
         "data": base64_encoded_data
     }
@@ -81,49 +89,56 @@ class MockContext:
         self.timestamp = "2025-07-29T01:10:00Z"
         self.resource = {"name": "projects/test-project/topics/gmail-notifications"}
 
-async def test_with_message_id():
-    """Test processing with a message ID - ONLY this email should be processed"""
-    logger.info("\n===== Testing with message ID =====")
+async def test_gmail_notification(history_id):
+    """Test processing with history_id as it would come from a real Gmail notification"""
+    logger.info("\n===== Testing with Gmail notification format =====\n")
     
-    # Use a real Gmail message ID from check_all_emails.py output
-    # This is a real email message ID from the inbox
-    real_message_id = "1983e8fc8afcf460"
-    logger.info(f"Using real Gmail message ID: {real_message_id}")
+    # Use the history ID passed in via command line arguments
+    logger.info(f"Using history ID: {history_id}")
     
-    # Create mock event with message ID and history ID
-    # Including both ensures we're testing the fix properly (should ignore history ID)
-    event = create_mock_event(message_id=real_message_id, history_id="12345")
+    # Create mock event with history ID only (Gmail notifications only contain historyId)
+    event = create_mock_event(history_id=history_id)
     context = MockContext()
     
-    logger.info("\n>>> EXPECTED BEHAVIOR: Only process ONE single email with the specified message ID")
-    logger.info(">>> The Cloud Function should NOT process any other emails or use history_id at all")
-    logger.info(">>> Look for 'Processing SINGLE email with ID:' in the logs - should only process one email\n")
+    logger.info("\n>>> EXPECTED BEHAVIOR: Cloud Function should:")
+    logger.info(">>> 1. Extract the historyId from the notification (but will ignore it)")
+    logger.info(">>> 2. Call gmail_reader.get_most_recent_emails() to get the latest emails directly")
+    logger.info(">>> 3. Check if the message has already been processed (idempotency check)")
+    logger.info(">>> 4. Process the most recent unprocessed email\n")
     
     # Call the cloud function's async implementation directly
     try:
-        logger.info("Starting test with message ID - this should run in SINGLE mode...")
+        logger.info("Starting test with Gmail notification format...")
         result = await _async_process_pubsub_message(event, context)
         logger.info(f"\nTest complete! Result: {result}")
         
         # Give guidance on what to look for in the logs
         logger.info("\nLook at the logs above to confirm:")
-        logger.info("1. Only ONE email was processed (the one with the specified message ID)")
-        logger.info("2. The history_id logic was bypassed entirely")
-        logger.info("3. No other emails were processed")
+        logger.info("1. Gmail watch was refreshed at the beginning")
+        logger.info("2. get_most_recent_emails() was called to get the latest email directly")
+        logger.info("3. Idempotency check was performed before processing")
+        logger.info("4. A single email was processed (if it wasn't already processed before)")
     except Exception as e:
         logger.error(f"\nERROR: {str(e)}")
         logger.error(traceback.format_exc())
 
-async def test_with_history_id():
-    """Test processing with a history ID only (no message ID)"""
-    logger.info("\n===== Testing with history ID only =====")
-    mock_event = create_mock_event(history_id="12345")
+async def test_with_invalid_notification():
+    """Test processing with an invalid notification (missing historyId)"""
+    logger.info("\n===== Testing with invalid notification (missing historyId) =====")
+    
+    # Create mock event with missing historyId
+    mock_event = {
+        "message": {
+            "data": base64.b64encode(json.dumps({"emailAddress": "paymentadvice@beco.co.in"}).encode('utf-8')).decode('utf-8')
+        }
+    }
     mock_context = MockContext()
     
-    logger.info("Starting test with history ID only - this should run in INCREMENTAL mode")
+    logger.info("Starting test with invalid notification - this should be rejected")
     try:
         result = await _async_process_pubsub_message(mock_event, mock_context)
         logger.info(f"Result: {result}")
+        logger.info("\nExpected: Function should reject this notification as invalid (missing historyId)")
     except Exception as e:
         logger.error(f"ERROR: {str(e)}")
         logger.error(traceback.format_exc())
@@ -131,19 +146,27 @@ async def test_with_history_id():
 async def main():
     """Run the tests"""
     print("\n========================================")
-    print("CLOUD FUNCTION SINGLE EMAIL TEST HARNESS")
+    print("CLOUD FUNCTION GMAIL NOTIFICATION TEST HARNESS")
     print("========================================\n")
     
     print("This test script verifies that the Cloud Function correctly processes:")
-    print("1. A single email when messageId is provided")
-    print("2. Multiple emails when only historyId is provided\n")
+    print("1. Gmail notifications (using our NEW approach to fetch recent emails directly)")
+    print("2. Invalid notifications (missing historyId)")
+    print("NOTE: The historyId is still needed for the notification format, but the")
+    print("      Cloud Function now IGNORES it and fetches the latest email directly instead\n")
     
-    print("TESTING SCENARIO 1: SINGLE EMAIL WITH MESSAGE ID")
-    await test_with_message_id()
+    # Parse command line arguments
+    args = parse_args()
     
-    # Uncomment to test history ID processing
-    # print("\nTESTING SCENARIO 2: MULTIPLE EMAILS WITH HISTORY ID")
-    # await test_with_history_id()
+    if not args.history_id:
+        logger.error("Error: --history-id is required")
+        sys.exit(1)
+    
+    print("TESTING SCENARIO 1: VALID GMAIL NOTIFICATION WITH HISTORY ID")
+    await test_gmail_notification(args.history_id)
+    
+    print("\nTESTING SCENARIO 2: INVALID NOTIFICATION WITHOUT HISTORY ID")
+    await test_with_invalid_notification()
 
 if __name__ == "__main__":
     asyncio.run(main())

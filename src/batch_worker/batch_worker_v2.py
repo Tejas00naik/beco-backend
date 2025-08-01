@@ -237,7 +237,7 @@ class BatchWorkerV2:
         processing_log = EmailProcessingLog(
             email_log_uuid=email_id,
             run_id=self.batch_manager.batch_run.run_id,
-            processing_status=ProcessingStatus.PENDING,  # Initially set to PENDING (will be updated)
+            processing_status=ProcessingStatus.EMAIL_RECEIVED,  # Initially set to EMAIL_RECEIVED
             error_msg=None
         )
         
@@ -266,7 +266,7 @@ class BatchWorkerV2:
             # Update processing log with this batch run
             await self.dao.update_document("email_processing_log", email_log_uuid, {
                 "run_id": self.batch_manager.batch_run.run_id,
-                "processing_status": ProcessingStatus.PARSED.value
+                "processing_status": ProcessingStatus.PARSING_COMPLETED.value
             })
             
             # Print detected legal entity and group UUIDs
@@ -355,7 +355,7 @@ class BatchWorkerV2:
                     
                     # Update email processing log with SAP_PUSHED status
                     await self.dao.update_document("email_processing_log", email_log_uuid, {
-                        "processing_status": ProcessingStatus.SAP_PUSHED.value,
+                        "processing_status": ProcessingStatus.SAP_EXPORT_GENERATED.value,
                         "sap_doc_num": payment_advice_uuid  # Using payment advice UUID as SAP doc number
                     })
                     logger.info(f"Updated email processing log {email_log_uuid} with SAP_PUSHED status")
@@ -388,7 +388,7 @@ class BatchWorkerV2:
                 # Try both email_id and email_log_uuid as the document ID
                 email_log_id = email_log_uuid if 'email_log_uuid' in locals() else email_id
                 await self.dao.update_document("email_processing_log", email_log_id, {
-                    "processing_status": ProcessingStatus.ERROR.value,
+                    "processing_status": ProcessingStatus.PROCESSING_FAILED.value,
                     "error_msg": f"{error_msg}\n{error_trace[:500]}"  # Limit error trace length
                 })
                 logger.info(f"Updated email processing log {email_log_id} with ERROR status")

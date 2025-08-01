@@ -7,10 +7,10 @@ import json
 import logging
 import uuid
 import traceback
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from src.models.schemas import PaymentAdvice
-from src.models.schemas import PaymentAdviceLine
+from src.models.schemas import PaymentAdvice, PaymentAdviceLine, PaymentAdviceStatus
 from src.repositories.payment_advice_repository import PaymentAdviceRepository
 from src.repositories.firestore_dao import FirestoreDAO
 
@@ -34,13 +34,15 @@ class PaymentProcessingServiceV2:
         self.dao = dao
         logger.info("Initialized PaymentProcessingServiceV2 for Zepto-specific processing")
     
-    async def create_payment_advice(self, email_log_uuid: str, llm_output: Dict[str, Any], legal_entity_uuid: Optional[str] = None, group_uuids: Optional[List[str]] = None) -> str:
+    async def create_payment_advice(self, email_log_uuid: str, llm_output: Dict, legal_entity_uuid: str = None, group_uuids: List[str] = None) -> str:
         """
-        Create a payment advice from LLM output, only processing payment advice lines.
+        Create a payment advice from LLM output and update its status properly.
         
         Args:
-            email_log_uuid: UUID of the email log entry
-            llm_output: Output from the LLM processor
+            email_log_uuid: UUID of the email log
+            llm_output: Output from the LLM containing payment advice data
+            legal_entity_uuid: UUID of the legal entity (optional)
+            group_uuids: List of group UUIDs (optional)
             legal_entity_uuid: Optional UUID of the legal entity associated with this payment advice
             group_uuids: Optional list of group UUIDs associated with this payment advice
             
@@ -112,9 +114,12 @@ class PaymentProcessingServiceV2:
         
         logger.info(f"PAYMENT ADVICE OBJECT: payment_advice_number={payment_advice.payment_advice_number}, payment_advice_date={payment_advice.payment_advice_date}, payment_advice_amount={payment_advice.payment_advice_amount}, payer_name={payment_advice.payer_name}, payee_name={payment_advice.payee_name}")
         
+        # Set initial payment advice status to LLM_READ after creation
+        payment_advice.payment_advice_status = PaymentAdviceStatus.LLM_READ
+        
         # Save the payment advice to the repository
         await self.payment_advice_repo.create(payment_advice)
-        logger.info(f"Created payment advice {payment_advice_uuid} for email log {email_log_uuid}")
+        logger.info(f"Created payment advice {payment_advice_uuid} for email log {email_log_uuid} with status {payment_advice.payment_advice_status.value}")
         
         # Log full LLM output for debugging
         logger.info(f"FULL LLM OUTPUT: {json.dumps(llm_output, default=str)}")
@@ -127,6 +132,13 @@ class PaymentProcessingServiceV2:
             
             # Save payment advice lines to Firestore
             await self.save_payment_advice_lines(payment_advice_lines, payment_advice_uuid)
+            
+            # Update payment advice status to POST_PROCESSING_COMPLETED after lines are saved
+            await self.payment_advice_repo.update(payment_advice_uuid, {
+                "payment_advice_status": PaymentAdviceStatus.POST_PROCESSING_COMPLETED.value,
+                "updated_at": datetime.utcnow()
+            })
+            logger.info(f"Updated payment advice {payment_advice_uuid} status to {PaymentAdviceStatus.POST_PROCESSING_COMPLETED.value}")
         else:
             logger.warning(f"No paymentadvice_lines found in LLM output for Zepto flow")
         

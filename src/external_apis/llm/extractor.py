@@ -67,14 +67,7 @@ class LLMExtractor:
         self.group_processor_factory = GroupProcessorFactory()
         
         self.model = os.environ.get('OPENAI_MODEL', 'gpt-4.1')  # Default to gpt-4.1 if not specified
-        
-        # Keep langchain client for backward compatibility
-        self.llm = ChatOpenAI(
-            openai_api_key=self.api_key,  # Use the stored API key
-            model=DEFAULT_MODEL,
-            temperature=0.0  # Deterministic output
-        )
-        
+
         logger.info(f"Initialized LLM extractor with model {self.model}")
         
         self.dao = dao
@@ -119,6 +112,22 @@ class LLMExtractor:
         full_text = document_text
         if email_body:
             full_text = f"EMAIL BODY:\n{email_body}\n\nDOCUMENT CONTENT:\n{document_text}"
+        
+        # Log document size information
+        doc_size_kb = len(full_text) / 1024
+        prompt_size_kb = len(prompt_template["template"]) / 1024
+        logger.info(f"Document size: {doc_size_kb:.2f} KB, Prompt size: {prompt_size_kb:.2f} KB")
+        
+        # Estimate token count (rough approximation: 1 token ≈ 4 characters for English text)
+        doc_tokens = len(full_text) / 4
+        prompt_tokens = len(prompt_template["template"]) / 4
+        total_tokens = doc_tokens + prompt_tokens
+        
+        logger.info(f"Estimated token counts - Document: {doc_tokens:.0f}, Prompt: {prompt_tokens:.0f}, Total: {total_tokens:.0f}")
+        
+        # Check if likely to exceed token limits
+        if total_tokens > 128000:  # GPT-4 Turbo max context window
+            logger.warning(f"⚠️ POTENTIAL TOKEN LIMIT ISSUE: Estimated tokens ({total_tokens:.0f}) may exceed model context limit")
             
         # Call the LLM with text
         logger.info(f"Calling {self.model} with document text")
@@ -131,13 +140,37 @@ class LLMExtractor:
                     {"role": "user", "content": full_text}
                 ],
                 temperature=0.0,  # Deterministic output
-                timeout=60.0  # 60 second timeout
+                timeout=90.0  # 60 second timeout
             )
+            
+            # Log token usage from response
+            if hasattr(response, 'usage') and response.usage:
+                logger.info(f"Actual token usage - Prompt: {response.usage.prompt_tokens}, "  
+                           f"Completion: {response.usage.completion_tokens}, "  
+                           f"Total: {response.usage.total_tokens}")
             
             response_text = response.choices[0].message.content
             logger.info(f"Got response with {len(response_text)} chars")
         except Exception as e:
-            logger.error(f"Error calling OpenAI API: {str(e)}")
+            # Enhanced error logging with specific error types
+            error_type = type(e).__name__
+            error_msg = str(e).lower()
+            
+            logger.error(f"Error calling OpenAI API ({error_type}): {str(e)}")
+            
+            # Check for specific error conditions
+            if any(token_err in error_msg for token_err in ["maximum context length", "token limit", "tokens in prompt"]):
+                logger.error(f"⚠️ TOKEN LIMIT EXCEEDED: Document is too large for {self.model}. "  
+                           f"Estimated tokens: {total_tokens:.0f}")
+            elif "rate limit" in error_msg:
+                logger.error(f"⚠️ RATE LIMIT: OpenAI API rate limit reached")
+            elif "timeout" in error_msg:
+                logger.error(f"⚠️ TIMEOUT: Request timed out after 90 seconds. Document may be too large or complex")
+            
+            # Include full traceback for detailed debugging
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            
             # Provide a fallback response structure to avoid cascading failures
             response_text = '{"meta_table": {}, "invoice_table": [], "other_doc_table": [], "settlement_table": []}'
             logger.warning(f"Using fallback response structure due to API error: {response_text}")

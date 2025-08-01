@@ -484,7 +484,7 @@ class GmailReader:
             
         logger.info(f"========== GMAIL WATCH CHECK COMPLETED for {email_address} ==========\n")
     
-    async def async_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None):
+    async def async_refresh_watch(self, email_address: str, dao=None, pubsub_topic: str = None) -> bool:
         """
         Async version of _refresh_watch.
         Refresh the Gmail API watch subscription.
@@ -505,11 +505,12 @@ class GmailReader:
                 
             logger.info(f"Using PubSub topic: {pubsub_topic}")
                 
-            # Set up watch request for the inbox
+            # Set up watch request for the inbox - ONLY for message additions
             request = {
                 'labelIds': ['INBOX'],  # Only watch inbox
                 'topicName': pubsub_topic,
-                'labelFilterBehavior': 'INCLUDE'
+                'labelFilterBehavior': 'INCLUDE',
+                'historyTypes': ['messageAdded']  # ONLY watch for new message events
             }
             
             logger.info("Calling Gmail API watch method...")
@@ -565,16 +566,21 @@ class GmailReader:
         """
         logger.info(f"Getting most recent message ID from history ID: {history_id}")
         try:
-            # Call the history.list API
+            # Call the history.list API specifically looking for new messages
             response = self.service.users().history().list(
                 userId=self.mailbox_id,
                 startHistoryId=history_id,
-                maxResults=1,  # We only need the most recent message
-                historyTypes=['messageAdded']
+                maxResults=5,  # Check a few records to be safe
+                historyTypes=['messageAdded']  # Only look for new messages
             ).execute()
             
             # Extract the most recent message ID from the history
             history_records = response.get('history', [])
+            
+            if not history_records:
+                logger.info(f"No message addition records found for history ID: {history_id}")
+                logger.info("Skipping processing as this was likely not a new message event")
+                return None
             
             # Look for the most recent message
             for record in history_records:
@@ -585,27 +591,15 @@ class GmailReader:
                     message = message_data.get('message', {})
                     message_id = message.get('id')
                     if message_id:
-                        logger.info(f"Found most recent message ID: {message_id} from history")
+                        logger.info(f"Found new message ID: {message_id} from history record")
                         return message_id
             
-            # If no messages found in history records, try listing messages
-            logger.info("No messages found in history, trying to list recent messages")
-            response = self.service.users().messages().list(
-                userId=self.mailbox_id,
-                maxResults=1  # Just get the most recent
-            ).execute()
-            
-            messages = response.get('messages', [])
-            if messages and len(messages) > 0:
-                message_id = messages[0].get('id')
-                logger.info(f"Found most recent message ID: {message_id} from messages list")
-                return message_id
-            
-            logger.warning("No recent messages found")
+            # If we got here, we had history records but couldn't extract a message ID
+            logger.warning("Found history records but no valid message IDs in them")
             return None
             
         except Exception as e:
-            logger.error(f"Error getting most recent message ID: {str(e)}")
+            logger.error(f"Error getting message ID from history: {str(e)}")
             return None
     
     async def get_history_changes(self, start_history_id, max_results=100):
@@ -652,4 +646,37 @@ class GmailReader:
             logger.error(f"Error fetching Gmail history: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            return []
+            
+    def get_most_recent_emails(self, num_emails: int = 1) -> List[Dict[str, Any]]:
+        """
+        Get the most recent emails from Gmail regardless of history ID.
+        
+        Args:
+            num_emails: Number of recent emails to retrieve (default: 1)
+            
+        Returns:
+            List of email objects containing the most recent emails
+        """
+        try:
+            logger.info(f"Retrieving {num_emails} most recent emails from Gmail")
+            
+            # Call Gmail API to list messages without query (gets most recent)
+            results = self.service.users().messages().list(
+                userId='me', maxResults=num_emails
+            ).execute()
+            
+            messages = results.get('messages', [])
+            recent_emails = []
+            
+            for message in messages:
+                email_id = message['id']
+                email_obj = self._get_email_content(email_id)
+                recent_emails.append(email_obj)
+            
+            logger.info(f"Retrieved {len(recent_emails)} recent emails from Gmail")
+            return recent_emails
+            
+        except HttpError as error:
+            logger.error(f"An error occurred while accessing Gmail API: {error}")
             return []
