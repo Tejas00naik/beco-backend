@@ -102,11 +102,36 @@ class LLMExtractionService:
             attachment_content = attachment_data.get("content")
             filename = attachment_data.get("filename")
             content_type = attachment_data.get("content_type")
+            is_plain_text = attachment_data.get("is_plain_text", False)
             
             if not attachment_content:
                 raise ValueError("Attachment content is missing")
+            
+            # Convert group_uuid to list for extract_from_attachment
+            group_uuids = [group_uuid] if group_uuid else []
+            
+            # For plain text (like email body), skip file creation and directly process the text content
+            if is_plain_text:
+                logger.info(f"Processing plain text content directly, skipping file creation")
+                # Decode bytes to string if needed
+                text_content = attachment_data.get("text_content", "")
+                if not text_content and isinstance(attachment_content, bytes):
+                    try:
+                        text_content = attachment_content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        logger.warning("Failed to decode attachment content as UTF-8")
+                        text_content = ""
                 
-            # Create a temporary file for the PDF content since process_document expects a file path
+                # Process the plain text content directly
+                extracted_data = await self.llm_extractor.process_document(
+                    document_text=text_content,
+                    email_body=email_text_content,
+                    group_uuid=group_uuid if group_uuid else None
+                )
+                
+                return extracted_data
+            
+            # For non-plain-text attachments, create a temporary file for processing
             import tempfile
             import os
             
@@ -127,8 +152,7 @@ class LLMExtractionService:
             logger.info(f"Created temporary file for attachment: {temp_file_path}")
             
             try:
-                # Convert group_uuid to list for extract_from_attachment
-                group_uuids = [group_uuid] if group_uuid else []
+                # Process file-based attachment
                 
                 # Use our existing extract_from_attachment method
                 result = await self.extract_from_attachment(

@@ -102,16 +102,26 @@ class LLMExtractor:
         # Select the appropriate prompt based on group_uuid
         prompt_template = self._get_prompt_template(group_uuid)
         
-        # Combine any provided email body with instructions
+        # Determine if the document is actually the email body itself
+        is_document_email_body = document_text == email_body
+        
+        # Combine prompt with content in a clearer way
         instruction = prompt_template["template"]
-        if email_body:
-            instruction = f"EMAIL BODY:\n{email_body}\n\nINSTRUCTIONS:\n{instruction}"
-            
+        
         # Traditional text-based approach
         logger.info(f"Processing document using text input with prompt template: {prompt_template['name']}")
-        full_text = document_text
-        if email_body:
+        
+        if is_document_email_body:
+            # Case 1: When processing email body directly (no attachment)
+            logger.info("Document is the email body itself - avoiding duplication")
+            full_text = document_text
+        elif email_body:
+            # Case 2: When processing an attachment with email body context
+            logger.info("Adding email body as context to document content")
             full_text = f"EMAIL BODY:\n{email_body}\n\nDOCUMENT CONTENT:\n{document_text}"
+        else:
+            # Case 3: Just processing document with no email context
+            full_text = document_text
         
         # Log document size information
         doc_size_kb = len(full_text) / 1024
