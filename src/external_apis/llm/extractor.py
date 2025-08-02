@@ -401,11 +401,7 @@ class LLMExtractor:
                 
         except Exception as e:
             logger.error(f"Error looking up group UUID for payee {payee_name}: {str(e)}")
-            
-        # Fallback for known groups
-        if "amazon" in payee_name.lower() or "kwick" in payee_name.lower() or "clicktech" in payee_name.lower():
-            return "group-amazon-12345"
-            
+ 
         return None
         
     async def _detect_legal_entity(self, output: Dict[str, Any]) -> Dict[str, Any]:

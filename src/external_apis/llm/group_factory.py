@@ -9,7 +9,11 @@ from uuid import uuid4
 
 from src.models.schemas import PaymentAdviceLine
 from src.repositories.firestore_dao import FirestoreDAO
-
+from src.external_apis.llm.constants import (
+    META_PAYMENT_ADVICE_NUMBER,
+    META_PAYER_LEGAL_NAME, META_PAYEE_LEGAL_NAME,
+    META_PAYMENT_ADVICE_DATE
+)
 logger = logging.getLogger(__name__)
 
 class GroupProcessor(ABC):
@@ -44,264 +48,436 @@ class DefaultGroupProcessor(GroupProcessor):
     
     def get_prompt_template(self) -> str:
         """Get the default prompt template."""
-        # Import constants for LLM output keys
-        from src.external_apis.llm.constants import (
-            LLM_META_TABLE_KEY, LLM_SETTLEMENT_TABLE_KEY, 
-            LLM_INVOICE_TABLE_KEY, LLM_RECONCILIATION_STATEMENT_KEY,
-            META_SETTLEMENT_DATE, META_PAYMENT_ADVICE_NUMBER,
-            META_PAYER_LEGAL_NAME, META_PAYEE_LEGAL_NAME
-        )
         
-        return f"""
-        You are an expert financial analyst. I will provide you with a payment advice document.
-        Extract the following information in JSON format:
-        
-        1. Meta Table: Contains payment advice metadata
-           - {META_SETTLEMENT_DATE}: The date when the payment was made (format: DD-MM-YYYY)
-           - {META_PAYMENT_ADVICE_NUMBER}: The unique identifier for this payment advice
-           - {META_PAYER_LEGAL_NAME}: The full legal name of the entity making the payment
-           - {META_PAYEE_LEGAL_NAME}: The full legal name of the entity receiving the payment
-           
-        2. Settlement Table: List of all settlement entries
-           For each settlement, extract:
-           - settlement_doc_type: The type of settlement document (BR, BD, TDS, RTV, etc.)
-           - settlement_doc_number: The unique identifier for this settlement document
-           - settlement_amount: The amount settled in this entry
-           
-        3. Invoice Table: List of all invoices mentioned
-           For each invoice, extract:
-           - invoice_number: The unique identifier for this invoice
-           - invoice_date: The date of the invoice (format: DD-MM-YYYY)
-           - total_invoice_settlement_amount: The total amount being settled for this invoice
-           - booking_amount: The total booking amount for this invoice (may be null)
-           
-        4. Reconciliation Statement: Maps settlements to invoices
-           For each entry, extract:
-           - settlement_doc_type: The type of settlement document
-           - settlement_doc_number: The unique identifier for this settlement document
-           - invoice_number: The invoice number this settlement is applied to (may be null)
-           - settlement_amount: The amount settled for this invoice (may be null)
-           - total_sd_amount: The total settlement document amount
-        
-        Return your answer as a JSON object with keys: {LLM_META_TABLE_KEY}, {LLM_SETTLEMENT_TABLE_KEY}, {LLM_INVOICE_TABLE_KEY}, {LLM_RECONCILIATION_STATEMENT_KEY}
-        """
+        return f""""""
     
     def post_process_output(self, processed_output: Dict[str, Any]) -> Dict[str, Any]:
-        """Default post-processing (no modifications)."""
-        return processed_output
-
+        """Convert Amazon L2 table to OP table (PaymentAdviceLine format)."""
+        return
 
 class AmazonGroupProcessor(GroupProcessor):
     """Amazon-specific group processor."""
     
+    def get_group_name(self) -> str:
+        """Get the name of the group."""
+        return "Amazon"
+        
     def get_prompt_template(self) -> str:
         """Get the Amazon-specific prompt template."""
-        return """
-        Extract structured data from the payment advice provided to you which i have received from a customer, give the output in 4 distinct tables :
-        Table 1. Meta Table
-        Table 2. Settlement Table
-        Table 3. Invoice Table
-        Table 4. Reconciliation Table
-        Below is guidance on how to prepare these four tables:
-        They will be prepared step by step in the order of table 1 to 2 to 3 to 4.
-        Table 1. Meta Table:
-        Extract the high-level details about the payment advice, these details will be available in the header section.
-        Columns:
-        1. Settlement Date: 
-        Its the date mentioned against ' Payment date' in header
 
-        2. Payment Advice Number: 
-        Unique identifier for that payment advice, mentioned in the header against 'Paymentnumber' 
+        return f"""System: You are an AI assistant that extracts and structures data from Amazon payment advice PDFs.
 
-        3. Payer's Name:
-        Name of the entity who is making the payment and has sent this advice (without internal codes).
+User: I need to extract key information from an Amazon payment advice PDF in a structured format.
 
-        4. Payee's Legal Name: 
-        Name of the entity receiving the funds, mentioned beside 'Payment made to' in the header (without internal codes).
+Please extract the following information into a well-structured format:
+ - Return one JSON object containing meta_table and l2_table, nothing else.
 
-        Table 2. Settlement Table:
-        List all the settlement documents mentioned in the payment advice.
-        Columns:
-        1. Settlement Document Type:
-        The type of document being settled (BR, BD, TDS, CN, DN etc., see detailed guide below)
+# META_TABLE FIELDS
+ - {META_PAYMENT_ADVICE_DATE} – value after "Payment date:" converted to DD-MM-YYYY
+ - {META_PAYMENT_ADVICE_NUMBER} – value after "Payment number:"
+ - {META_PAYER_LEGAL_NAME} – entity name that appears before the word "issued" in the first sentence
+ - {META_PAYEE_LEGAL_NAME} – value after "Payment made to:" with any codes put at the end of the name should be removed
 
-        2. Settlement Document Number:
-        The unique identifier for that settlement document.
+# L2_TABLE RULES
+ - Wrap-join: if Invoice Number is split by newline or space, join with no separator (e.g. 2640135110↵4458 → 26401351104458).
+ - invoice_date: convert MMM format to DD-MM-YYYY; if blank, use null.
+ - Ignore leading asterisks in numeric fields.
+ - Parentheses indicate negative numbers.
+ - Strip commas from numbers and output as bare JSON numbers.
+ - Preserve Invoice description text as its is always.
+- Discount taken column is often just blanks, do not put values from Amount paid column in it
 
-        3. Settlement Amount:
-        Total amount of the document as applied to one or more invoices
+## SYNTHETIC BANK-RECEIPT ROW (append last)
+ - invoice_number = null
+ - invoice_date = settlement_date
+ - invoice_description = Bank Receipt
+ - discount_taken = null
+ - amount_paid = negative of header "Payment amount:"
+ - amount_remaining = null
 
-        Detailed guide on Settlement Document Types:
-        a. Bank Receipt: 
-        - This is found mostly in header Terms like "payment by bank transfer," "UTR," "NEFT," "RTGS."
-        - Doc Number: Typically mentioned in the header against ' Payment number' or UTR or reference number.
+# EXAMPLE INPUT TEXT FORMAT
+Here's an example of what the payment advice document looks like:
 
-        b. BDPO (Business Development and Promotional Outlay):
-        - These are promotional expenses/adjustments by the payer.
-        - Terms like "Co-op," "BDPO," "Business Development," "Marketing," "Promotion," "Allowance," "Co-op Adjustment" will be mentioned.
-        - Purpose: Represents marketing incentives or co-op program adjustments.
+Payment made to:       KWICK LIVING (I) PRIVATE LIMITED(1MC3G)
+Our Supplier No:       98499554
+Supplier site name:    KWIGLCRPL
+Payment number:        340290516
+Payment date:          11-JUL-2025
+Payment currency:      INR
+Payment amount:        719,489.19
 
-        c. Tax Deduction at Source (TDS):
-        - They are found in the table and  Any of the Terms like "TDS," "Tax Deducted at Source," "TDS.", "Withholding tax", "Deduction" will be mentioned in them.
-        - Purpose: Statutory withholding of taxes by the payer.
-
-        d. Credit Note (CN):
-        - Terms like "credit note," "credit memo," "CN," etc. will be mentioned.
-        - Purpose: Represents credit provided for various reasons (returns, overcharges).
-
-        e. Debit Note (DN):
-        - Terms like "debit note," "debit memo," "DN," etc. will be mentioned.
-        - Purpose: Represents additional charges by the payer.
-
-        Table 3. Invoice Table:
-        List all the invoices mentioned in the payment advice document.
-        Columns:
-        1. Invoice Number
-        This is the unique identifier number for this invoice
-
-        2. Invoice Date
-        This is the date of creation of the invoice, format DD-MM-YYYY
-
-        3. Total Invoice Settlement Amount
-        This is the total amount of this invoice which is being settled.
-
-        4. Booking Amount 
-        This is the amount at which the payer has booked this invoice, you need to only give this if it's explicitly mentioned in the payment advice. Otherwise keep this blank
+Invoice Number:    Invoice Date:    Invoice description             Discount Taken    Amount Paid    Amount Remaining
+MH25/252601063    05-JUN-2025     8OXO1R7L/ISK3/##NOT_AVAILABLE                     158,104.90     0.00
+MH25/252601063-   05-JUN-2025     India TDS Invoice for AP-194Q                     (133.99)       0.00
+TDS-CM-0997
+MH25/252601289    11-JUN-2025     2XFB1ZSB/ISK3/##NOT_AVAILABLE                    562,835.46     0.00
+MH25/252601289-   11-JUN-2025     India TDS Invoice for AP-194Q                     (476.98)       0.00
+TDS-CM-8360
+KWIGM-           07-JUL-2025      RTV FCN-KWIGM-30292516672552-                    (65.18)        0.00
+30292516672552-                    AMD2-L-1405
+AMD2-L-1405
+KWIGM-           07-JUL-2025      RTV FCN-KWIGM-30296863171552-                    (775.02)       0.00
+30296863171552-                    PAX1-L-189
+PAX1-L-189
 
 
-        Table 4. Reconciliation Statement:
-        Based on the data from the Invoice Table, Settlement Table, and details in the payment advice, I expect you to construct a Reconciliation Statement showing how each settlement document maps to one or more invoices along with the amount settled .
+## Another input example
+Payment Made To:
+Our Supplier Number:
+Supplier Site Name:
+Payment Ref. Number:
+KWICK LIVING (I) PRIVATE
+LIMITED (BECO)
+10218
+KWIFTCRTPL
+45732
+Payment Date: May 20, 2025
+Payment Currency: INR
+Payment Amount: 412,667.52
+Invoice Number Invoice Date Invoice Description Amount Paid Discount Taken Amount
+Remaining
+B2BOS24/22374SCRSCRSCR Aug 10, 2024 30001109196411 23,187.00 0.00 0.00
+B2BOS24/22546SCRSCR Aug 20, 2024 30001119082896 9,027.00 0.00 0.00
+B2BOS24/23341SCRSCR Sep 21, 2024 30001113141964 4,552.34 0.00 0.00
+B2BOS24/23380SCRSCR Sep 23, 2024 77,095.52 0.00 0.00
+B2BOS24/24256SCR Oct 26, 2024 30001111821172 285,142.38 0.00 0.00
+B2BOS24/24256SCRSC Oct 26, 2024 30001111821172 -155,193.60 0.00 0.00
+B2BOS24/24256SCRSCR Oct 26, 2024 30001111821172 155,193.60 0.00 0.00
+B2BOS24/24258SCRSCR Oct 27, 2024 30001111777592 4,130.76 0.00 0.00
+B2BOS24/24261SCRSCR Oct 27, 2024 30001114737067 9,532.52 0.00 0.00
+Total 412,667.52 0.00 0.00
 
-        Columns:
-        1. Settlement Document Type
-        The type of document from Table 2 (BR, BD, TDS, etc.)
 
-        2. Settlement Document Number
-        The document number from Table 2
+# EXAMPLE OUTPUT FORMAT
+Here's the exact format your JSON output should follow:
 
-        3. Invoice Number
-        The invoice number from Table 3 to which this settlement applies (can be null if not linked to any specific invoice)
+{{
+	"meta_table": {{
+		"{META_PAYMENT_ADVICE_DATE}": "11-07-2025",
+		"{META_PAYMENT_ADVICE_NUMBER}": "340290516",
+		"{META_PAYER_LEGAL_NAME}": "Clicktech Retail Private Limited",
+		"{META_PAYEE_LEGAL_NAME}": "KWICK LIVING (I) PRIVATE LIMITED"
+	}},
+	"l2_table": [
+		{{
+			"invoice_number": "MH25/252601063",
+			"invoice_date": "05-06-2025",
+			"invoice_description": "8OXO1R7L/ISK3/##NOT_AVAILABLE",
+			"discount_taken": null,
+			"amount_paid": 158104.9,
+			"amount_remaining": 0
+		}},
+		{{
+			"invoice_number": "MH25/252601063-TDS-CM-0997",
+			"invoice_date": "05-06-2025",
+			"invoice_description": "India TDS Invoice for AP-194Q",
+			"discount_taken": null,
+			"amount_paid": -133.99,
+			"amount_remaining": 0
+		}},
+		{{
+			"invoice_number": "MH25/252601289",
+			"invoice_date": "11-06-2025",
+			"invoice_description": "2XFB1ZSB/ISK3/##NOT_AVAILABLE",
+			"discount_taken": null,
+			"amount_paid": 562835.46,
+			"amount_remaining": 0
+		}},
+		{{
+			"invoice_number": "MH25/252601289-TDS-CM-8360",
+			"invoice_date": "11-06-2025",
+			"invoice_description": "India TDS Invoice for AP-194Q",
+			"discount_taken": null,
+			"amount_paid": -476.98,
+			"amount_remaining": 0
+		}},
+		{{
+			"invoice_number": "KWIGM-30292516672552-AMD2-L-1405",
+			"invoice_date": "07-07-2025",
+			"invoice_description": "RTV FCN-KWIGM-30292516672552-AMD2- L-1405",
+			"discount_taken": null,
+			"amount_paid": -65.18,
+			"amount_remaining": 0
+		}},
+		{{
+			"invoice_number": "KWIGM-30296863171552-PAX1-L-189",
+			"invoice_date": "07-07-2025",
+			"invoice_description": "RTV FCN-KWIGM-30296863171552-PAX1- L-189",
+			"discount_taken": null,
+			"amount_paid": -775.02,
+			"amount_remaining": 0
+		}},
+		{{
+			"invoice_number": null,
+			"invoice_date": "11-07-2025",
+			"invoice_description": "Bank Receipt",
+			"discount_taken": null,
+			"amount_paid": -719489.19,
+			"amount_remaining": null
+		}}
+	]
+}}
 
-        4. Settlement Amount
-        The amount of this settlement applied to this specific invoice (can be null)
-
-        5. Total Settlement Document Amount
-        The total amount of the settlement document (from Table 2)
-
-        IMPORTANT! Ensure all settlement docs are included in the reconciliation statement. Do not link any settlement docs to invoices unless the exact invoice numbers are mentioned in the document. 
-
-
-        Output format:
-        {
-          "meta_table": {
-            "settlement_date": "<DD-MM-YYYY>",
-            "payment_advice_number": "<string>",
-            "payer_legal_name": "<string>",
-            "payee_legal_name": "<string>"
-          },
-
-          "invoice_table": [
-            {
-              "invoice_number": "<string>",
-              "invoice_date": "<DD-MM-YYYY>",
-              "total_invoice_settlement_amount": <number>,
-              "booking_amount": <number or null>
-            }
-          ],
-
-          "settlement_table": [
-            {
-              "settlement_doc_type": "<string>",
-              "settlement_doc_number": "<string>",
-              "settlement_amount": <number>
-            }
-          ],
-
-          "reconciliation_statement": [
-            {
-              "settlement_doc_type": "<string>",
-              "settlement_doc_number": "<string>",
-              "invoice_number": "<string or null>",
-              "settlement_amount": <number or null>,
-              "total_sd_amount": <number>
-            }
-          ]
-        }
-
-        Rules 
-        - Mutual-Exclusivity – A document can appear in either invoice_table or settlement_table, never both.
-        - BD / BDPO – Always a settlement document (settlement_doc_type = "BD"). Must never enter invoice_table.
-        - BR in Header – If a Bank-Receipt (UTR/NEFT/RTGS) appears only in the header, still create a BR row in settlement_table. Do not map its amount to invoices unless those invoice numbers are explicitly shown.
-        - Completeness – Each invoice listed must have its total_invoice_settlement_amount equal to the sum of all settlement_amounts allocated to it across all rows in the reconciliation_statement.
-        - Numeric Precision – All money fields must be JSON numbers, not strings.
-        - No Guesswork – No heuristic or auto-allocation of invoices against settlement doc is permitted.
-        - Fail-Safe – If any required data is missing or ambiguous, return
-        - BDPO Parsing Rule – If a line shows Co-op/BDPO wording, treat the left-most number as
-          settlement_doc_number; never add it to invoice_table.
-        - If a BD/BDPO document number equals the numeric string found in the "invoice number" column on the same row, treat that value only as settlement_doc_number.
-        - In that case set "invoice_number": null in reconciliation_statement unless other, different invoice numbers are explicitly listed alongside the BDPO line.
-        - Never place the BDPO's own doc number in the invoice_number field.
-        - Orphan-Doc Inclusion – Every settlement_table entry must also have a reconciliation_statement row. When no invoice is listed, set "invoice_number": null and "settlement_amount": null.
+# CONSTRAINTS
+ - Do not include markdown, headers, or commentary.
+ - Return JSON exactly in the schema above.
+ - Asterisks, commas, and parentheses must be cleaned per rules.
+ - If any required data is missing, return the error JSON and stop.
+- The amounts should retain their '-' negative sign if they are in () brackets
+ - Read the first non-zero numeric value in the row (either "Discount Taken" or "Amount Paid").
+      – Assign that value to amount_paid.
+      – If this rule moves a value out of "Discount Taken", set discount_taken to null.
+- If the synthetic Bank-Receipt row does not show the same payment_advice_number in invoice_number, return:
+  {{"error":"bank-receipt invoice_number missing or mismatched"}} and stop.
         """
     
     def post_process_output(self, processed_output: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Apply Amazon-specific post-processing to the LLM output.
-        
-        For Amazon payment advices, we need to ensure all invoices referenced in settlements
-        exist in the invoice table.
-        """
+        """Convert Amazon L2 table to OP table (PaymentAdviceLine format)."""
         try:
-            # Get tables from the processed output
-            invoice_table = processed_output.get("invoice_table", [])
-            settlement_table = processed_output.get("settlement_table", [])
-            reconciliation_statement = processed_output.get("reconciliation_statement", [])
+            logger.info("Starting Amazon post-processing to transform L2 table to OP table")
             
-            # Extract all invoice numbers from invoice table
-            existing_invoice_numbers = set(
-                invoice["invoice_number"] for invoice in invoice_table 
-                if invoice.get("invoice_number")
-            )
+            # Check if we have the L2 table in the processed output
+            if "l2_table" not in processed_output or not processed_output["l2_table"]:
+                logger.warning("No L2 table found in processed output, skipping post-processing")
+                return processed_output
             
-            # Extract invoice numbers from reconciliation statement that should be in invoice table
-            referenced_invoice_numbers = set()
-            for rec in reconciliation_statement:
-                invoice_number = rec.get("invoice_number")
-                if invoice_number:
-                    referenced_invoice_numbers.add(invoice_number)
+            # Get meta table info
+            meta_table = processed_output.get("meta_table", {})
+            payment_advice_number = meta_table.get(META_PAYMENT_ADVICE_NUMBER, "")
+            payer_name = meta_table.get(META_PAYER_LEGAL_NAME, "")
+            payment_advice_date = meta_table.get(META_PAYMENT_ADVICE_DATE, "")
             
-            # Find invoice numbers that are referenced but not in invoice table
-            missing_invoice_numbers = referenced_invoice_numbers - existing_invoice_numbers
+            # Initialize paymentadvice_lines list
+            paymentadvice_lines = []
             
-            # For each missing invoice number, extract data from reconciliation and add to invoice table
-            for invoice_number in missing_invoice_numbers:
-                logger.info(f"Found invoice {invoice_number} in reconciliation but not in invoice table, creating entry")
+            # Process each row in the L2 table
+            l2_table = processed_output["l2_table"]
+            
+            logger.info(f"Processing {len(l2_table)} rows from L2 table")
+            
+            # First, collect all TDS entries to calculate their sum
+            tds_entries = []
+            total_tds_amount = 0
+            
+            # Identify and sum all TDS entries
+            for row in l2_table:
+                invoice_description = row.get("invoice_description", "")
+                amount_paid = row.get("amount_paid", 0)
                 
-                # Calculate total settlement amount for this invoice from reconciliation
-                total_invoice_settlement_amount = 0
-                for rec in reconciliation_statement:
-                    if rec.get("invoice_number") == invoice_number and rec.get("settlement_amount"):
-                        total_invoice_settlement_amount += rec["settlement_amount"]
+                # Skip rows with None/null amount paid
+                if amount_paid is None:
+                    continue
+                    
+                # Convert amount_paid to float if it's a string
+                if isinstance(amount_paid, str):
+                    try:
+                        # Remove commas and convert to float
+                        amount_paid = float(amount_paid.replace(",", ""))
+                    except ValueError:
+                        logger.warning(f"Could not convert amount_paid to float: {amount_paid}")
+                        amount_paid = 0
                 
-                # Create new invoice entry
-                new_invoice = {
-                    "invoice_number": invoice_number,
-                    "invoice_date": None,  # We don't have this information
-                    "total_invoice_settlement_amount": total_invoice_settlement_amount,
-                    "booking_amount": None  # We don't have this information
+                # Identify TDS entries
+                if invoice_description and "tds" in invoice_description.lower():
+                    tds_entries.append(row)
+                    total_tds_amount += amount_paid
+            
+            # Process non-TDS entries
+            for row in l2_table:
+                invoice_number = row.get("invoice_number")
+                invoice_description = row.get("invoice_description", "")
+                amount_paid = row.get("amount_paid", 0)
+                
+                # Skip rows with None/null amount paid
+                if amount_paid is None:
+                    continue
+                    
+                # Convert amount_paid to float if it's a string
+                if isinstance(amount_paid, str):
+                    try:
+                        # Remove commas and convert to float
+                        amount_paid = float(amount_paid.replace(",", ""))
+                    except ValueError:
+                        logger.warning(f"Could not convert amount_paid to float: {amount_paid}")
+                        amount_paid = 0
+                
+                abs_amount = abs(amount_paid)
+                
+                # Skip TDS entries - will handle them separately with aggregated total
+                if invoice_description and "tds" in invoice_description.lower():
+                    continue
+                
+                # Default values for all document types
+                doc_number = invoice_number if invoice_number else ""
+                ref_invoice_no = None  # Always null per requirements
+                ref_1 = doc_number
+                ref_2 = doc_number
+                account_type = "BP"  # Default account type
+                
+                # Apply different logic based on document type
+                
+                # 1. BDPO - Identified by "Co-op" in description
+                keyword_list = ["co-op"]
+                if invoice_description and any(keyword in invoice_description.lower() for keyword in keyword_list):
+                    doc_type = "BDPO"
+                    ref_1 = doc_number
+                    ref_2 = ref_1
+                    ref_3 = "BDPO"
+                    dr_cr = "Dr"
+                    dr_amt = abs_amount
+                    cr_amt = 0
+                
+                # 2. RTV/Credit note - Identified by "RTV" or "VRET" or negative amount not TDS/BDPO
+                keyword_list = ["rtv", "vret in credit", "contra"]
+                negative_keyword_list = ["tds", "co-op", "bank receipt", "invoice"]
+                if invoice_description and any(keyword in invoice_description.lower() for keyword in keyword_list) and not any(keyword in invoice_description.lower() for keyword in negative_keyword_list):
+                    doc_type = "Credit Note"
+                    ref_1 = doc_number
+                    ref_2 = ref_1.split('-')[-1] if "vret" in invoice_description.lower() else ref_1
+                    ref_3 = "RTV"
+                    dr_cr = "Dr"  # Always Debit per requirements
+                    dr_amt = abs_amount
+                    cr_amt = 0
+                
+                # 3. Bank Receipt - Identified by "Bank Receipt" in description
+                elif invoice_description and "bank receipt" in invoice_description.lower():
+                    doc_type = "Bank Receipt"
+                    doc_number = payment_advice_number
+                    ref_1 = doc_number
+                    ref_2 = ref_1
+                    ref_3 = "REC"  # Per requirements
+                    dr_cr = "Dr"  # Always Debit per requirements
+                    dr_amt = abs_amount
+                    cr_amt = 0
+                
+                # 4. Invoice (default) - Any remaining entries
+                else:
+                    doc_type = "Invoice"
+                    ref_1 = doc_number
+                    # Special logic for Ref 2: Value from 'Ref 1' without the prefix
+                    if ref_1 and "/" in ref_1:
+                        ref_2 = ref_1.split("/", 1)[1]  # Get everything after the first '/'
+                    else:
+                        ref_2 = ref_1
+                    ref_3 = "INV"
+                    if amount_paid > 0:
+                        dr_cr = "Cr"  # Invoice is Credit per updated requirements
+                        dr_amt = 0
+                        cr_amt = abs_amount
+                    else:
+                        dr_cr = "Dr"  # Invoice is Debit per updated requirements
+                        dr_amt = abs_amount
+                        cr_amt = 0
+                
+                # Create a paymentadvice_line entry
+                line_entry = {
+                    "bp_code": None,  # Will be enriched later via SAP
+                    "gl_code": None,  # Will be enriched later via SAP
+                    "account_type": account_type,
+                    "customer": payer_name,
+                    "doc_type": doc_type,
+                    "doc_number": doc_number,
+                    "ref_invoice_no": ref_invoice_no,
+                    "ref_1": ref_1,
+                    "ref_2": ref_2,
+                    "ref_3": ref_3,
+                    "amount": abs_amount,  # Always store as positive value
+                    "dr_cr": dr_cr,
+                    "dr_amt": dr_amt,
+                    "cr_amt": cr_amt,
+                    "branch_name": "Maharashtra"  # Default branch name
                 }
                 
-                # Add to invoice table
-                invoice_table.append(new_invoice)
-                logger.info(f"Added missing invoice {invoice_number} to invoice table")
+                paymentadvice_lines.append(line_entry)
+                logger.info(f"Created Amazon OP table entry: {line_entry}")
             
-            # Update processed output with potentially modified invoice table
-            processed_output["invoice_table"] = invoice_table
+            # Add a single aggregated TDS entry if TDS entries exist
+            if tds_entries and total_tds_amount != 0:
+                # TDS logic per requirements
+                doc_type = "TDS"
+                doc_number = payment_advice_number
+                ref_invoice_no = None
+                ref_1 = doc_number
+                ref_2 = ref_1
+                ref_3 = "TDS"
+                
+                # Dr/Cr logic for TDS: If sum is negative then Debit, otherwise Credit
+                abs_amount = abs(total_tds_amount)
+                if total_tds_amount < 0:
+                    dr_cr = "Dr"
+                    dr_amt = abs_amount
+                    cr_amt = 0
+                else:
+                    dr_cr = "Cr"
+                    dr_amt = 0
+                    cr_amt = abs_amount
+                
+                # Create the aggregated TDS entry
+                tds_entry = {
+                    "bp_code": None,
+                    "gl_code": None,
+                    "account_type": "GL",  # Only TDS has GL account type per requirements
+                    "customer": payer_name,
+                    "doc_type": doc_type,
+                    "doc_number": doc_number,
+                    "ref_invoice_no": ref_invoice_no,
+                    "ref_1": ref_1,
+                    "ref_2": ref_2,
+                    "ref_3": ref_3,
+                    "amount": abs_amount,
+                    "dr_cr": dr_cr,
+                    "dr_amt": dr_amt,
+                    "cr_amt": cr_amt,
+                    "branch_name": "Maharashtra"  # Default branch name
+                }
+                
+                paymentadvice_lines.append(tds_entry)
+                logger.info(f"Added aggregated TDS entry with total amount {abs_amount} and Dr/Cr {dr_cr}")
+            
+            # Update processed output to include the new format
+            processed_output["paymentadvice_lines"] = paymentadvice_lines
+            logger.info(f"Transformed {len(paymentadvice_lines)} rows into paymentadvice_lines format for Amazon")
+            
+            # Keep empty legacy tables for compatibility with BatchWorkerV1
+            if "meta_table" not in processed_output:
+                processed_output["meta_table"] = {}
+            if "invoice_table" not in processed_output:
+                processed_output["invoice_table"] = []
+            if "settlement_table" not in processed_output:
+                processed_output["settlement_table"] = []
+            if "reconciliation_statement" not in processed_output:
+                processed_output["reconciliation_statement"] = []
+            
+            # Create and save PaymentAdviceLine objects to Firestore
+            try:
+                # Initialize the DAO with the appropriate collection prefix (if test mode is detected)
+                collection_prefix = ""
+                if processed_output.get("is_test", False):
+                    collection_prefix = "dev_"
+                    
+                dao = FirestoreDAO(collection_prefix=collection_prefix)
+                
+                # Create and save each payment advice line
+                payment_advice_uuid = processed_output.get("payment_advice_uuid")
+                if not payment_advice_uuid:
+                    payment_advice_uuid = str(uuid4())  # Generate a UUID if not provided
+                    logger.info(f"Generated payment_advice_uuid: {payment_advice_uuid}")
+                
+                # Don't actually save to Firestore here - this will be handled by the calling code
+                # Just include the payment_advice_uuid in the output
+                processed_output["payment_advice_uuid"] = payment_advice_uuid
+            
+            except Exception as e:
+                logger.error(f"Error preparing Firestore data for Amazon: {str(e)}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
             
             return processed_output
             
         except Exception as e:
             logger.error(f"Error in Amazon post-processing: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return processed_output  # Return original output on error
 
 
