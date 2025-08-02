@@ -189,8 +189,12 @@ class BatchWorkerV2:
     async def create_payment_advice_from_llm_output(self, llm_output: Dict[str, Any], email_log_uuid: str) -> Optional[str]:
         """Create payment advice from LLM output using the payment service."""
         try:
-            # Import constants for LLM output keys
-            from src.external_apis.llm.constants import LLM_LEGAL_ENTITY_UUID_KEY, LLM_GROUP_UUIDS_KEY
+            # Import constants for LLM output keys and meta fields
+            from src.external_apis.llm.constants import (
+                LLM_LEGAL_ENTITY_UUID_KEY, LLM_GROUP_UUIDS_KEY, 
+                LLM_META_TABLE_KEY, META_PAYMENT_ADVICE_NUMBER, 
+                META_PAYMENT_ADVICE_DATE
+            )
             
             # Extract legal entity information from LLM output
             legal_entity_uuid = llm_output.get(LLM_LEGAL_ENTITY_UUID_KEY)
@@ -201,9 +205,55 @@ class BatchWorkerV2:
             logger.info(f"  - Legal entity UUID: {legal_entity_uuid or 'Not detected'}")
             logger.info(f"  - Group UUIDs: {group_uuids or ['None']}")
             
-            # If legal entity is not detected, try to detect it with the lookup service
+            # If legal entity is not detected, raise error
             if not legal_entity_uuid:
                 raise ValueError("Legal entity UUID not detected from LLM output")
+            
+            # Extract payment advice details for duplicate check
+            meta_table = llm_output.get(LLM_META_TABLE_KEY, {})
+            payment_advice_number = meta_table.get(META_PAYMENT_ADVICE_NUMBER, "")
+            payment_advice_date = meta_table.get(META_PAYMENT_ADVICE_DATE, "")
+            
+            # Log payment advice details
+            logger.info(f"Payment advice details for duplicate check:")
+            logger.info(f"  - Payment Advice Number: {payment_advice_number or 'Not detected'}")
+            logger.info(f"  - Payment Advice Date: {payment_advice_date or 'Not detected'}")
+            
+            # Check if this is a retry by checking the email subject
+            is_retry = False
+            try:
+                # Use existing method to get the email log
+                email_log = await self.dao.get_email_log(email_log_uuid)
+                
+                if email_log and "email_subject" in email_log:
+                    email_subject = email_log.get("email_subject", "")
+                    if email_subject and "retry" in email_subject.lower():
+                        is_retry = True
+                        logger.info(f"'retry' found in email subject '{email_subject}'. Skipping duplicate check.")
+                else:
+                    logger.warning(f"Could not find email log with UUID {email_log_uuid} for retry check")
+            except Exception as e:
+                logger.warning(f"Error checking email subject for retry flag: {str(e)}")
+            
+            # Check for duplicates if we have necessary data and it's not a retry
+            if not is_retry and legal_entity_uuid and payment_advice_number and payment_advice_date:
+                duplicate_id = await self.payment_advice_repo.check_duplicate_payment_advice(
+                    legal_entity_uuid=legal_entity_uuid,
+                    payment_advice_number=payment_advice_number,
+                    payment_advice_date=payment_advice_date
+                )
+                
+                if duplicate_id:
+                    error_msg = f"Duplicate payment advice detected! Existing payment advice {duplicate_id} has the same legal entity, payment advice number, and date."
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                    
+                logger.info("No duplicate payment advice found. Proceeding with creation.")
+            else:
+                if is_retry:
+                    logger.info("Skipping duplicate check due to retry flag in email subject")
+                else:
+                    logger.warning("Cannot perform duplicate check: Missing legal entity, payment advice number, or date")
             
             # Use payment service to process LLM output with correct parameter order
             payment_advice_uuid = await self.payment_service.create_payment_advice(

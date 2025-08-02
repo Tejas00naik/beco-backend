@@ -165,3 +165,39 @@ class PaymentAdviceRepository:
         except Exception as e:
             logger.error(f"Error updating payment advice {payment_advice_uuid} status: {str(e)}")
             raise
+            
+    async def check_duplicate_payment_advice(self, legal_entity_uuid: str, payment_advice_number: str, payment_advice_date: str) -> Optional[str]:
+        """
+        Check if a payment advice with the same legal entity, advice number, and date already exists.
+        
+        Args:
+            legal_entity_uuid: UUID of the legal entity
+            payment_advice_number: Payment advice reference number
+            payment_advice_date: Payment advice date
+            
+        Returns:
+            payment_advice_uuid of the duplicate if found, None otherwise
+        """
+        try:
+            # Query for potential duplicates using the three key fields
+            docs = await self.dao.query_documents(
+                "payment_advice",
+                filters=[
+                    ("legal_entity_uuid", "==", legal_entity_uuid),
+                    ("payment_advice_number", "==", payment_advice_number),
+                    ("payment_advice_date", "==", payment_advice_date)
+                ]
+            )
+            
+            # If any document is found, it's a duplicate
+            if docs and len(docs) > 0:
+                duplicate_id = docs[0].get("payment_advice_uuid")
+                logger.warning(f"Duplicate payment advice found: {duplicate_id} with legal entity {legal_entity_uuid}, "
+                               f"advice number {payment_advice_number}, and date {payment_advice_date}")
+                return duplicate_id
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking for duplicate payment advice: {str(e)}")
+            raise
