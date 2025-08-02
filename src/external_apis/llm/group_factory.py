@@ -12,7 +12,7 @@ from src.repositories.firestore_dao import FirestoreDAO
 from src.external_apis.llm.constants import (
     META_PAYMENT_ADVICE_NUMBER,
     META_PAYER_LEGAL_NAME, META_PAYEE_LEGAL_NAME,
-    META_PAYMENT_ADVICE_DATE
+    META_PAYMENT_ADVICE_DATE, META_PAYMENT_ADVICE_AMOUNT
 )
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,7 @@ Please extract the following information into a well-structured format:
  - {META_PAYMENT_ADVICE_NUMBER} – value after "Payment number:"
  - {META_PAYER_LEGAL_NAME} – entity name that appears before the word "issued" in the first sentence
  - {META_PAYEE_LEGAL_NAME} – value after "Payment made to:" with any codes put at the end of the name should be removed
+ - {META_PAYMENT_ADVICE_AMOUNT} – value after "Payment amount:" converted to bare JSON number
 
 # L2_TABLE RULES
  - Wrap-join: if Invoice Number is split by newline or space, join with no separator (e.g. 2640135110↵4458 → 26401351104458).
@@ -156,7 +157,8 @@ Here's the exact format your JSON output should follow:
 		"{META_PAYMENT_ADVICE_DATE}": "11-07-2025",
 		"{META_PAYMENT_ADVICE_NUMBER}": "340290516",
 		"{META_PAYER_LEGAL_NAME}": "Clicktech Retail Private Limited",
-		"{META_PAYEE_LEGAL_NAME}": "KWICK LIVING (I) PRIVATE LIMITED"
+		"{META_PAYEE_LEGAL_NAME}": "KWICK LIVING (I) PRIVATE LIMITED",
+        "{META_PAYMENT_ADVICE_AMOUNT}": "719489.19",
 	}},
 	"l2_table": [
 		{{

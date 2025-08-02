@@ -65,6 +65,7 @@ class PaymentProcessingServiceV2:
         payment_advice_date = meta_table.get("payment_advice_date") or meta_table.get("Settlement Date")
         payer_name = meta_table.get("payer_legal_name") or meta_table.get("Payer's Name")
         payee_name = meta_table.get("payee_legal_name") or meta_table.get("Payee's Legal Name")
+        payment_advice_amount = meta_table.get("payment_advice_amount") or meta_table.get("Payment Advice Amount")
         
         logger.info(f"META EXTRACTION: payment_advice_number={payment_advice_number}, payment_advice_date={payment_advice_date}, payer_name={payer_name}, payee_name={payee_name}")
         
@@ -76,13 +77,15 @@ class PaymentProcessingServiceV2:
             logger.info(f"Generated payment_advice_uuid: {payment_advice_uuid}")
         
         # Calculate payment advice amount from payment advice lines if available
-        payment_advice_amount = 0
-        if "paymentadvice_lines" in llm_output and llm_output["paymentadvice_lines"]:
+
+        if not payment_advice_amount and "paymentadvice_lines" in llm_output and llm_output["paymentadvice_lines"]:
             # For Zepto, sum up all the amount values in paymentadvice_lines
+            payment_advice_amount = 0
             try:
                 for line in llm_output["paymentadvice_lines"]:
                     amount = float(line.get("amount", 0))
-                    payment_advice_amount += amount
+                    if line.get("dr_cr") == "Dr":
+                        payment_advice_amount += amount
             except Exception as e:
                 logger.error(f"Error calculating payment advice amount: {str(e)}")
         

@@ -79,6 +79,7 @@ class SheetsService:
                 "Date", "Email Subject", "Sender", 
                 "Legal Entity", "Payment Advice ID",
                 "Reference Numbers", "Total Amount", 
+                "Payment Advice Date", # New column
                 "SAP Export Status", "SAP Export Link", "Processed At"
             ]
             
@@ -94,7 +95,7 @@ class SheetsService:
             # Add headers
             self.service.spreadsheets().values().update(
                 spreadsheetId=self.sheet_id,
-                range=f"A1:J1",
+                range=f"A1:K1", # Updated to include new column
                 valueInputOption="RAW",
                 body={"values": values}
             ).execute()
@@ -109,7 +110,7 @@ class SheetsService:
                             "startRowIndex": 0,
                             "endRowIndex": 1,
                             "startColumnIndex": 0,
-                            "endColumnIndex": 10
+                            "endColumnIndex": 11
                         },
                         "cell": {
                             "userEnteredFormat": {
@@ -140,7 +141,7 @@ class SheetsService:
                             "sheetId": 0,
                             "dimension": "COLUMNS",
                             "startIndex": 0,
-                            "endIndex": 10
+                            "endIndex": 11
                         }
                     }
                 }
@@ -187,6 +188,15 @@ class SheetsService:
                 else:
                     formatted_processed_date = str(processed_date)
                 
+                # Format the payment advice date if it exists
+                payment_advice_date = entry.get("payment_advice_date")
+                if isinstance(payment_advice_date, datetime):
+                    formatted_payment_advice_date = payment_advice_date.strftime("%Y-%m-%d")
+                elif payment_advice_date:
+                    formatted_payment_advice_date = str(payment_advice_date)
+                else:
+                    formatted_payment_advice_date = ""
+                    
                 # Create a row with all required columns
                 row = [
                     formatted_date,
@@ -196,6 +206,7 @@ class SheetsService:
                     entry.get("payment_advice_uuid", ""),
                     entry.get("reference_numbers", ""),
                     entry.get("amount", ""),
+                    formatted_payment_advice_date,  # Add payment advice date here
                     entry.get("sap_export_status", "Pending"),
                     # Format URL as a hyperlink formula
                     f'=HYPERLINK("{entry.get("sap_export_url", "")}", "Download")' if entry.get("sap_export_url") else "",

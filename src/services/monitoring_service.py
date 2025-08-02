@@ -177,6 +177,7 @@ class MonitoringService:
                     "payment_advice_uuid": payment_advice.get("payment_advice_uuid", ""),
                     "reference_numbers": payment_advice.get("payment_advice_number", ""),
                     "amount": payment_advice.get("payment_advice_amount", 0),
+                    "payment_advice_date": payment_advice.get("payment_advice_date", ""),
                     "sap_export_status": payment_advice.get("payment_advice_status", "Pending"),
                     "sap_export_url": payment_advice.get("sap_export_url", ""),
                     "processed_at": payment_advice.get("created_at")
