@@ -72,26 +72,23 @@ class LLMExtractor:
         
         self.dao = dao
         
-    async def process_document(self, document_text: Optional[str] = None, pdf_path: Optional[str] = None, email_body: Optional[str] = None, group_uuid: Optional[str] = None) -> Dict[str, Any]:
+    async def process_document(self, attachment_text: Optional[str] = None, attachment_obj: Optional[Any] = None, email_body: Optional[str] = None, group_uuid: Optional[str] = None) -> Dict[str, Any]:
+        
         """
         Process a document with LLM extraction.
         
         Args:
-            document_text: Text content of the document to process
-            pdf_path: Path to PDF file to process (alternative to document_text)
+            attachment_text: Text content of the document to process
+            attachment_obj: Optional attachment object to process
             email_body: Optional email body text to provide additional context
             group_uuid: Optional group UUID for group-specific prompt selection
             
         Returns:
             Extracted JSON data
         """
-        # Extract text if we have a PDF file
-        if pdf_path and not document_text:
-            logger.info(f"Extracting text from PDF for pre-processing: {pdf_path}")
-            document_text = self._extract_text_from_pdf(pdf_path)
-            
-        if not document_text:
-            logger.error("No document text or PDF provided")
+
+        if not attachment_text and not attachment_obj:
+            logger.error("No document text or attachment object provided")
             return {}
             
         # Pre-detect group using a simple extraction technique if not provided
@@ -101,27 +98,17 @@ class LLMExtractor:
             
         # Select the appropriate prompt based on group_uuid
         prompt_template = self._get_prompt_template(group_uuid)
-        
-        # Determine if the document is actually the email body itself
-        is_document_email_body = document_text == email_body
-        
-        # Combine prompt with content in a clearer way
-        instruction = prompt_template["template"]
-        
+
         # Traditional text-based approach
         logger.info(f"Processing document using text input with prompt template: {prompt_template['name']}")
         
-        if is_document_email_body:
-            # Case 1: When processing email body directly (no attachment)
-            logger.info("Document is the email body itself - avoiding duplication")
-            full_text = document_text
-        elif email_body:
+        if email_body:
             # Case 2: When processing an attachment with email body context
             logger.info("Adding email body as context to document content")
-            full_text = f"EMAIL BODY:\n{email_body}\n\nDOCUMENT CONTENT:\n{document_text}"
+            full_text = f"EMAIL BODY:\n{email_body}\n\nDOCUMENT CONTENT:\n{attachment_text}"
         else:
             # Case 3: Just processing document with no email context
-            full_text = document_text
+            full_text = attachment_text
         
         # Log document size information
         doc_size_kb = len(full_text) / 1024
@@ -337,255 +324,7 @@ class LLMExtractor:
             'reconciliation_statement': [],
             'other_doc_table': []
         }
-            
-    def _extract_potential_payee_name(self, text_content: str) -> Optional[str]:
-        """
-        Extract a potential payee name from text content for group detection.
-        
-        Args:
-            text_content: Text content to extract payee name from
-            
-        Returns:
-            Potential payee name or None if not found
-        """
-        if not text_content:
-            return None
-            
-        # Simple extraction based on common patterns in payment advice documents
-        payee_patterns = [
-            r"(?:payee|paid to|payment to)[:\s]+([A-Za-z0-9\s&.,()'-]{3,50})",
-            r"(?:recipient|beneficiary)[:\s]+([A-Za-z0-9\s&.,()'-]{3,50})",
-            r"(?:remit(?:ted)? to)[:\s]+([A-Za-z0-9\s&.,()'-]{3,50})",
-            r"(?:KWICK LIVING|Amazon|Clicktech)"
-        ]
-        
-        for pattern in payee_patterns:
-            matches = re.findall(pattern, text_content, re.IGNORECASE)
-            if matches:
-                # Return the first match, cleaned up
-                payee_name = matches[0].strip()
-                # Remove any trailing punctuation
-                payee_name = re.sub(r'[.,;:\s]+$', '', payee_name)
-                return payee_name
-                
-        # Look for specific known payees
-        known_payees = ["KWICK LIVING", "Amazon", "Clicktech"]
-        for payee in known_payees:
-            if payee in text_content:
-                return payee
-                
-        return None
-        
-    async def _get_group_uuid_for_legal_entity(self, payee_name: str) -> Optional[str]:
-        """
-        Look up a group UUID for a given payee name.
-        
-        Args:
-            payee_name: Name of payee to search for
-            
-        Returns:
-            Group UUID if found, None otherwise
-        """
-        if not self.dao or not payee_name:
-            return None
-            
-        try:
-            # First try exact match
-            legal_entities = await self.dao.query_documents(
-                "legal_entity",
-                filters=[("payer_legal_name", "==", payee_name)]
-            )
-            
-            if not legal_entities:
-                # Try case-insensitive contains match
-                payee_lower = payee_name.lower()
-                all_legal_entities = await self.dao.query_documents("legal_entity")
-                legal_entities = [le for le in all_legal_entities 
-                                if le.get("payer_legal_name", "").lower().find(payee_lower) >= 0]
-            
-            if legal_entities:
-                legal_entity = legal_entities[0]
-                group_uuid = legal_entity.get("group_uuid")
-                logger.info(f"Found group UUID {group_uuid} for payee {payee_name}")
-                return group_uuid
-                
-        except Exception as e:
-            logger.error(f"Error looking up group UUID for payee {payee_name}: {str(e)}")
- 
-        return None
-        
-    async def _detect_legal_entity(self, output: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Detect the legal entity and group from the extracted output.
-        
-        Args:
-            output: Extracted output from LLM
-            
-        Returns:
-            Dictionary with legal_entity_uuid and group_uuid if found
-        """
-        logger.debug(f"_detect_legal_entity called with output type: {type(output)}")
-        
-        # Initialize empty result
-        result = {}
-        
-        try:
-            if not output or not isinstance(output, dict):
-                logger.warning(f"_detect_legal_entity received invalid output: {output}")
-                return result
-                
-            # Check if meta_table exists and is a dict
-            meta_table = output.get('meta_table')
-            if not meta_table or not isinstance(meta_table, dict):
-                logger.warning(f"meta_table missing or not a dict: {meta_table}")
-                return result
-                
-            # Extract payer name from meta table - with detailed logging
-            payer_name = None
-            logger.debug(f"Meta table keys: {meta_table.keys() if isinstance(meta_table, dict) else 'Not a dict'}")
-            
-            if 'payer_legal_name' in meta_table:
-                payer_name = meta_table['payer_legal_name']
-                logger.debug(f"Found payer_legal_name: {payer_name}")
-            elif 'payer' in meta_table:
-                payer_name = meta_table['payer']
-                logger.debug(f"Found payer: {payer_name}")
-            
-            if not payer_name or not isinstance(payer_name, str) or payer_name.strip() == "":
-                logger.warning(f"No valid payer name found in meta_table")
-                return result
-                
-            # Look up legal entity by name
-            logger.info(f"Detecting legal entity for payer_name: {payer_name}")
-            try:
-                if self.dao is None:
-                    logger.warning("No DAO available for legal entity lookup")
-                    return result
-                    
-                legal_entities = await self.dao.query_documents(
-                    "legal_entity",
-                    filters=[("payer_legal_name", "==", payer_name)]
-                )
-                
-                if legal_entities:
-                    legal_entity = legal_entities[0]
-                    legal_entity_uuid = legal_entity.get("uuid")
-                    group_uuid = legal_entity.get("group_uuid")
-                    
-                    if legal_entity_uuid:
-                        result["legal_entity_uuid"] = legal_entity_uuid
-                        
-                    if group_uuid:
-                        result["group_uuid"] = group_uuid
-                        logger.info(f"Found legal entity UUID {legal_entity_uuid} with group UUID {group_uuid} for payer {payer_name}")
-            except Exception as e:
-                logger.error(f"Error querying legal entity: {str(e)}")
-                
-            # Also detect group directly if needed
-            if not result.get("group_uuid") and payer_name:
-                logger.info(f"Detecting group for payer_name: {payer_name}")
-                try:
-                    if self.dao is None:
-                        logger.warning("No DAO available for group lookup")
-                        return result
-                        
-                    legal_entities = await self.dao.query_documents(
-                        "legal_entity",
-                        filters=[("payer_legal_name", "==", payer_name)]
-                    )
-                    
-                    if legal_entities:
-                        legal_entity = legal_entities[0]
-                        group_uuid = legal_entity.get("group_uuid")
-                        
-                        if group_uuid:
-                            result["group_uuid"] = group_uuid
-                            logger.info(f"Found group UUID {group_uuid} for payer {payer_name}")
-                except Exception as e:
-                    logger.error(f"Error detecting group: {str(e)}")
-                    
-            return result
-        except Exception as e:
-            logger.error(f"Unexpected error in _detect_legal_entity: {str(e)}")
-            # Return empty result on error
-            return {}
-    
-    def _pre_detect_amazon_format(self, text: str) -> bool:
-        """
-        Pre-detect Amazon format from email body or document text before LLM processing.
-        
-        Args:
-            text: Email body or document text to check
-            
-        Returns:
-            True if Amazon format detected, False otherwise
-        """
-        if not isinstance(text, str):
-            return False
-            
-        # Look for Amazon-related keywords in the text
-        amazon_keywords = [
-            "amazon", "clicktech", "retail private limited", 
-            "clicktech retail", "payment advice", "amazon.in",
-            "amazon development center", "amazon seller services"
-        ]
-        
-        text_lower = text.lower()
-        for keyword in amazon_keywords:
-            if keyword.lower() in text_lower:
-                logger.debug(f"Pre-detected Amazon format from keyword: {keyword}")
-                return True
-                
-        return False
-        
-    def _detect_amazon_format(self, output: Dict[str, Any]) -> bool:
-        """
-        Detect if the output appears to be from an Amazon payment advice.
-        
-        Args:
-            output: Extracted output from LLM
-            
-        Returns:
-            True if Amazon format detected, False otherwise
-        """
-        try:
-            # Amazon format detection logic
-            if not isinstance(output, dict):
-                logger.debug("Output is not a dict in _detect_amazon_format")
-                return False
-                
-            # Get meta_table and ensure it's a dictionary
-            meta_table = output.get('meta_table')
-            if meta_table is None or not isinstance(meta_table, dict):
-                logger.debug(f"meta_table is not valid in _detect_amazon_format: {type(meta_table)}")
-                return False
-                
-            # Check for Amazon in payer_legal_name
-            payer = meta_table.get('payer_legal_name')
-            if payer and isinstance(payer, str) and ('Amazon' in payer or 'Clicktech' in payer):
-                logger.debug(f"Detected Amazon format from payer_legal_name: {payer}")
-                return True
-                
-            # Check for Amazon in sender name
-            sender = meta_table.get('sender')
-            if sender and isinstance(sender, str) and 'amazon' in sender.lower():
-                logger.debug(f"Detected Amazon format from sender: {sender}")
-                return True
-                
-            # Check for Amazon in recipient name
-            recipient = meta_table.get('recipient')
-            if recipient and isinstance(recipient, str) and 'amazon' in recipient.lower():
-                logger.debug(f"Detected Amazon format from recipient: {recipient}")
-                return True
-                
-            logger.debug("No Amazon format detected in _detect_amazon_format")
-            return False
-        except Exception as e:
-            logger.warning(f"Error in _detect_amazon_format: {e}")
-            import traceback
-            logger.warning(f"Traceback: {traceback.format_exc()}")
-            return False
-        
+             
     def _post_process_group_output(self, processed_output: Dict[str, Any], group_uuid: str) -> Dict[str, Any]:
         """
         Apply group-specific post-processing to the LLM output using factory pattern.

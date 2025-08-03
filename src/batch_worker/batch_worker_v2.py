@@ -17,6 +17,7 @@ from enum import Enum
 import time
 
 # Import configuration
+from src.external_apis.llm.extractor import LLMExtractor
 from src.config import (
     DEFAULT_FETCH_DAYS,
     DEFAULT_GMAIL_CREDENTIALS_PATH,
@@ -134,7 +135,7 @@ class BatchWorkerV2:
         # Initialize LLM extraction service
         if not os.environ.get("OPENAI_API_KEY"):
             logger.error("OPENAI_API_KEY environment variable not set. LLM extraction will fail.")
-        self.llm_service = LLMExtractionService(self.dao, self.legal_entity_repo)
+        self.llm_extractor = LLMExtractor(self.dao)
         logger.info("Using LLMExtractionService with OpenAI API (GPT-4.1)")
         
         # Initialize SAP export service
@@ -168,7 +169,7 @@ class BatchWorkerV2:
         )
         
         # Initialize EmailProcessor with dependencies
-        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_service)
+        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_extractor)
         
         # Initialize counters
         self.emails_processed = 0

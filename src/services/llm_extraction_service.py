@@ -85,13 +85,14 @@ class LLMExtractionService:
             logger.error(f"Error extracting data from attachment: {str(e)}")
             raise
             
-    async def process_attachment_for_payment_advice(self, email_text_content: str, attachment_data: Dict[str, Any], group_uuid: str = None) -> Dict[str, Any]:
+    async def process_attachment_for_payment_advice(self, email_text_content: str, attachment_obj: Dict[str, Any], attachment_text: str, group_uuid: str = None) -> Dict[str, Any]:
         """
         Process an attachment for payment advice extraction.
         
         Args:
             email_text_content: Text content of the email for context
-            attachment_data: Dictionary with attachment data including content
+            attachment_obj: Dictionary with attachment data including content
+            attachment_text: Text content of the attachment for context
             group_uuid: Optional UUID of the group for prompt selection and post-processing
             
         Returns:
@@ -99,10 +100,10 @@ class LLMExtractionService:
         """
         try:
             # Extract attachment content and file information
-            attachment_content = attachment_data.get("content")
-            filename = attachment_data.get("filename")
-            content_type = attachment_data.get("content_type")
-            is_plain_text = attachment_data.get("is_plain_text", False)
+            attachment_content = attachment_obj.get("content")
+            filename = attachment_obj.get("filename")
+            content_type = attachment_obj.get("content_type")
+            is_plain_text = attachment_obj.get("is_plain_text", False)
             
             if not attachment_content:
                 raise ValueError("Attachment content is missing")
@@ -114,7 +115,7 @@ class LLMExtractionService:
             if is_plain_text:
                 logger.info(f"Processing plain text content directly, skipping file creation")
                 # Decode bytes to string if needed
-                text_content = attachment_data.get("text_content", "")
+                text_content = attachment_obj.get("text_content", "")
                 if not text_content and isinstance(attachment_content, bytes):
                     try:
                         text_content = attachment_content.decode("utf-8")
@@ -124,7 +125,7 @@ class LLMExtractionService:
                 
                 # Process the plain text content directly
                 extracted_data = await self.llm_extractor.process_document(
-                    document_text=text_content,
+                    document_text=attachment_text,
                     email_body=email_text_content,
                     group_uuid=group_uuid if group_uuid else None
                 )

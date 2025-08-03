@@ -11,7 +11,10 @@ import fitz  # PyMuPDF
 from src.models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
 
 # Import legal entity lookup service
+from src.external_apis.llm.extractor import LLMExtractor
 from src.services.legal_entity_lookup import LegalEntityLookupService
+from src.repositories.firestore_dao import FirestoreDAO
+from src.external_apis.gcp.gcs_uploader import GCSUploader
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +24,7 @@ class EmailProcessor:
     Handles email processing operations for the batch worker.
     """
     
-    def __init__(self, dao, gcs_uploader, llm_extractor, sap_integrator=None):
+    def __init__(self, dao: FirestoreDAO, gcs_uploader: GCSUploader, llm_extractor: LLMExtractor, sap_integrator=None):
         """
         Initialize the email processor.
         
@@ -180,9 +183,9 @@ class EmailProcessor:
                 logger.warning("Failed to extract text from PDF attachment due to missing dependencies")
         
         # Future extensions can be added here for other file types
-        # elif 'xlsx' in content_type.lower() or 'excel' in content_type.lower():
-        #     # Process Excel files
-        #     pass
+        elif 'xlsx' in content_type.lower() or 'excel' in content_type.lower():
+            # Process Excel files
+            pass
         # elif 'docx' in content_type.lower() or 'word' in content_type.lower():
         #     # Process Word files
         #     pass
@@ -237,10 +240,13 @@ class EmailProcessor:
         
         # STEP 2: Process the content with the full extraction prompt
         logger.info(f"STEP 2: Starting full payment advice extraction for {source_name}")
-        llm_output = await self.llm_extractor.process_attachment_for_payment_advice(
-            email_text_content, content_source, group_uuid=group_uuid
+        llm_output = await self.llm_extractor.process_document(
+            attachment_text=content_text,
+            email_body=email_text_content,
+            attachment_obj=content_source,
+            group_uuid=group_uuid
         )
-        
+
         # Add the legal entity and group from step 1 to the llm_output
         if legal_entity_uuid:
             llm_output["legal_entity_uuid"] = legal_entity_uuid
@@ -347,28 +353,18 @@ class EmailProcessor:
             # If no attachments, process the email body directly
             if not attachments and email_text_content:
                 logger.info(f"No attachments found. Processing email body directly.")
-                
-                # Create a pseudo-attachment with the email body content for processing
-                # Note: We'll send the text content directly to avoid PDF extraction errors
-                body_as_attachment = {
-                    'filename': 'email_body.txt',
-                    'content_type': 'text/plain',
-                    'text_content': email_text_content,
-                    'content': email_text_content.encode('utf-8'),  # Add content field as bytes
-                    'is_plain_text': True  # Flag to indicate this is plain text and not a PDF
-                }
-                
+
                 # Process the email body using the common helper function
                 body_output = await self._process_content_for_payment_advice(
                     email_text_content=email_text_content,
-                    content_source=body_as_attachment,
-                    content_text=email_text_content,
-                    source_name="email body",
+                    content_source="",
+                    content_text="",
+                    source_name="email_body",
                     email_log=email_log
                 )
                 
                 # Log summary of extracted LLM data
-                self._log_llm_output_summary(body_output, "email body")
+                self._log_llm_output_summary(body_output, "email_body")
                 
                 logger.info("Successfully processed email body directly with LLM")
                 processed_attachments = 1  # Mark as processed one item
