@@ -16,7 +16,7 @@ from src.repositories.firestore_dao import FirestoreDAO
 
 logger = logging.getLogger(__name__)
 
-class PaymentProcessingServiceV2:
+class PaymentAdviceDbLogger:
     """
     Service for processing payment advices from LLM outputs in BatchWorkerV2/Zepto flows.
     Only processes payment advice lines, not legacy invoice/settlement/other doc tables.
@@ -24,7 +24,7 @@ class PaymentProcessingServiceV2:
     
     def __init__(self, payment_advice_repo: PaymentAdviceRepository, dao: Optional[FirestoreDAO] = None):
         """
-        Initialize the PaymentProcessingServiceV2.
+        Initialize the PaymentAdviceDbLogger.
         
         Args:
             payment_advice_repo: Repository for payment advice operations
@@ -32,7 +32,7 @@ class PaymentProcessingServiceV2:
         """
         self.payment_advice_repo = payment_advice_repo
         self.dao = dao
-        logger.info("Initialized PaymentProcessingServiceV2 for Zepto-specific processing")
+        logger.info("Initialized PaymentAdviceDbLogger for Zepto-specific processing")
     
     async def create_payment_advice(self, email_log_uuid: str, llm_output: Dict, legal_entity_uuid: str = None, group_uuids: List[str] = None) -> str:
         """

@@ -13,6 +13,7 @@ import traceback
 import logging
 import argparse
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
+
+load_dotenv()
 
 # Import cloud function's async implementation directly
 from cloud_function.main import _async_process_pubsub_message

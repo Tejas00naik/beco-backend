@@ -17,7 +17,6 @@ from enum import Enum
 import time
 
 # Import configuration
-from src.external_apis.llm.extractor import LLMExtractor
 from src.config import (
     DEFAULT_FETCH_DAYS,
     DEFAULT_GMAIL_CREDENTIALS_PATH,
@@ -33,10 +32,9 @@ from src.models.schemas import (
 from src.batch_worker.batch_manager import BatchManager, BatchRunStatus
 from src.repositories.firestore_dao import FirestoreDAO
 from src.external_apis.gcp.gcs_uploader import GCSUploader
-from src.services.llm_extraction_service import LLMExtractionService
 from src.external_apis.gcp.gmail_reader import GmailReader, GMAIL_AVAILABLE
 from src.services.email.email_processor import EmailProcessor
-from src.services.payment_processing_service import PaymentProcessingService
+from src.services.payment_advice_db_logger import PaymentAdviceDbLogger
 from src.services.sap_export_service import SAPExportService
 from src.services.account_enrichment_service import AccountEnrichmentService
 from src.services.monitoring_service import MonitoringService
@@ -123,21 +121,7 @@ class BatchWorkerV2:
         self.invoice_repo = InvoiceRepository(self.dao)
         self.other_doc_repo = OtherDocRepository(self.dao)
         self.settlement_repo = SettlementRepository(self.dao)
-        
-        # Initialize payment service for creating payment_advice entries
-        self.payment_service = PaymentProcessingService(
-            payment_advice_repo=self.payment_advice_repo,
-            invoice_repo=self.invoice_repo,
-            other_doc_repo=self.other_doc_repo,
-            settlement_repo=self.settlement_repo
-        )
-        
-        # Initialize LLM extraction service
-        if not os.environ.get("OPENAI_API_KEY"):
-            logger.error("OPENAI_API_KEY environment variable not set. LLM extraction will fail.")
-        self.llm_extractor = LLMExtractor(self.dao)
-        logger.info("Using LLMExtractionService with OpenAI API (GPT-4.1)")
-        
+
         # Initialize SAP export service
         self.sap_export_service = SAPExportService(dao=self.dao)
         
@@ -148,12 +132,11 @@ class BatchWorkerV2:
         self.monitoring_service = MonitoringService(dao=self.dao)
         
         # Initialize the payment processing service V2 for Zepto (no legacy repos)
-        from src.services.payment_processing_service_v2 import PaymentProcessingServiceV2
-        self.payment_service = PaymentProcessingServiceV2(
+        self.payment_service = PaymentAdviceDbLogger(
             payment_advice_repo=self.payment_advice_repo,
             dao=self.dao  # Pass DAO for direct payment advice line operations
         )
-        logger.info("Initialized PaymentProcessingServiceV2 for Zepto-only processing")
+        logger.info("Initialized PaymentAdviceDbLogger for Zepto-only processing")
         
         from src.services.legal_entity_lookup import LegalEntityLookupService
         self.legal_entity_lookup = LegalEntityLookupService(self.dao)
@@ -169,7 +152,7 @@ class BatchWorkerV2:
         )
         
         # Initialize EmailProcessor with dependencies
-        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader, self.llm_extractor)
+        self.email_processor = EmailProcessor(self.dao, self.gcs_uploader)
         
         # Initialize counters
         self.emails_processed = 0
@@ -386,7 +369,7 @@ class BatchWorkerV2:
                     # If payment advice creation failed, generate a UUID for consistency
                     logger.error("Payment advice creation failed")
                     raise ValueError("Payment advice creation failed")            
-                # Payment advice lines are already saved by PaymentProcessingServiceV2 during create_payment_advice
+                # Payment advice lines are already saved by PaymentAdviceDbLogger during create_payment_advice
                 
                 # Enrich payment advice lines with BP/GL codes first
                 try:

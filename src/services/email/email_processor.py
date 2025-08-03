@@ -1,17 +1,19 @@
 """Email processing service for payment advice extraction."""
 
 import logging
-import uuid
-from datetime import datetime
-from typing import Dict, Any, Optional, List
-import os
+import re
+import pandas as pd
+import io
 import tempfile
-import fitz  # PyMuPDF
-# Import models
+import uuid
+import os
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional
+import tempfile
+import openpyxl
+import fitz
+from src.services.payment_advice_processor.group_factory import GroupProcessorFactory
 from src.models.schemas import EmailLog, EmailProcessingLog, ProcessingStatus
-
-# Import legal entity lookup service
-from src.external_apis.llm.extractor import LLMExtractor
 from src.services.legal_entity_lookup import LegalEntityLookupService
 from src.repositories.firestore_dao import FirestoreDAO
 from src.external_apis.gcp.gcs_uploader import GCSUploader
@@ -24,7 +26,7 @@ class EmailProcessor:
     Handles email processing operations for the batch worker.
     """
     
-    def __init__(self, dao: FirestoreDAO, gcs_uploader: GCSUploader, llm_extractor: LLMExtractor, sap_integrator=None):
+    def __init__(self, dao: FirestoreDAO, gcs_uploader: GCSUploader, sap_integrator=None):
         """
         Initialize the email processor.
         
@@ -36,7 +38,6 @@ class EmailProcessor:
         """
         self.dao = dao
         self.gcs_uploader = gcs_uploader
-        self.llm_extractor = llm_extractor
         self.sap_integrator = sap_integrator
         
         # Initialize the legal entity lookup service
@@ -185,7 +186,77 @@ class EmailProcessor:
         # Future extensions can be added here for other file types
         elif 'xlsx' in content_type.lower() or 'excel' in content_type.lower():
             # Process Excel files
-            pass
+            try:                
+                logger.info(f"Extracting text from Excel file: {attachment_filename}")
+                
+                # Get the content as bytes
+                content = attachment.get('content')
+                if content:
+                    try:
+                        # First try to read directly from bytes using pandas
+                        excel_data = pd.read_excel(io.BytesIO(content))
+                        
+                        # Convert DataFrame to string representation
+                        text_content = ""
+                        
+                        # Add column headers
+                        headers = ", ".join(str(col) for col in excel_data.columns)
+                        text_content += f"Headers: {headers}\n\n"
+                        
+                        # Add rows as text
+                        for idx, row in excel_data.iterrows():
+                            row_text = f"Row {idx+1}: " + ", ".join(f"{col}: {val}" for col, val in row.items() if pd.notna(val))
+                            text_content += row_text + "\n"
+                        
+                        logger.info(f"Successfully extracted {len(text_content)} characters from Excel file")
+                        attachment['text_content'] = text_content
+                        attachment['extraction_method'] = 'pandas'
+                        
+                    except Exception as pandas_err:
+                        logger.error(f"Error reading Excel with pandas: {str(pandas_err)}")
+                        
+                        # Fallback to openpyxl
+                        try:
+                            
+                            # Save content to temp file
+                            with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as temp_excel:
+                                temp_excel.write(content)
+                                temp_excel_path = temp_excel.name
+                            
+                            # Open with openpyxl
+                            wb = openpyxl.load_workbook(temp_excel_path, data_only=True)
+                            text_content = ""
+                            
+                            # Process each sheet
+                            for sheet_name in wb.sheetnames:
+                                sheet = wb[sheet_name]
+                                text_content += f"Sheet: {sheet_name}\n"
+                                
+                                # Extract cell values as text
+                                for row in sheet.iter_rows(values_only=True):
+                                    row_text = ", ".join(str(cell) for cell in row if cell is not None)
+                                    if row_text.strip():
+                                        text_content += row_text + "\n"
+                                text_content += "\n"
+                            
+                            logger.info(f"Successfully extracted {len(text_content)} characters using openpyxl fallback")
+                            attachment['text_content'] = text_content
+                            attachment['extraction_method'] = 'openpyxl_fallback'
+                            
+                            # Clean up temp file
+                            try:
+                                os.unlink(temp_excel_path)
+                            except:
+                                pass
+                                
+                        except Exception as openpyxl_err:
+                            logger.error(f"Openpyxl fallback also failed: {str(openpyxl_err)}")
+                else:
+                    logger.error("Excel file content is missing")
+                    
+            except ImportError as e:
+                logger.warning(f"Excel processing libraries not installed: {str(e)}")
+                logger.warning("Failed to extract text from Excel attachment due to missing dependencies")
         # elif 'docx' in content_type.lower() or 'word' in content_type.lower():
         #     # Process Word files
         #     pass
@@ -238,13 +309,17 @@ class EmailProcessor:
                 })
                 logger.info(f"Updated email_log {email_log.email_log_uuid} with group_uuids: {email_log.group_uuids}")
         
-        # STEP 2: Process the content with the full extraction prompt
-        logger.info(f"STEP 2: Starting full payment advice extraction for {source_name}")
-        llm_output = await self.llm_extractor.process_document(
+        # STEP 2: Get the appropriate group processor
+        logger.info(f"STEP 2: Getting group processor for {source_name} with group_uuid {group_uuid}")
+       
+        group_processor = GroupProcessorFactory.get_processor(group_uuid)
+        logger.info(f"Using {group_processor.__class__.__name__} for processing {source_name}")
+
+        logger.info(f"STEP 3: Starting LLM extraction for {source_name} using {group_processor.__class__.__name__}")
+        llm_output = await group_processor.process_payment_advice(
             attachment_text=content_text,
             email_body=email_text_content,
             attachment_obj=content_source,
-            group_uuid=group_uuid
         )
 
         # Add the legal entity and group from step 1 to the llm_output
