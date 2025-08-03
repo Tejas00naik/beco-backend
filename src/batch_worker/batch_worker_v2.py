@@ -301,131 +301,133 @@ class BatchWorkerV2:
         
         try:
             # Process email and create email log
-            email_log_uuid, llm_output = await self.email_processor.process_email(email_data)
+            email_log_uuid, llm_outputs = await self.email_processor.process_email(email_data)
             
-            # Update the processing log with actual email_log_uuid if different
-            if email_log_uuid != email_id:
-                logger.info(f"Email log UUID {email_log_uuid} differs from email ID {email_id}")
-                await self.dao.update_document("email_processing_log", email_id, {
-                    "email_log_uuid": email_log_uuid
-                })
-                # Also create a reference with the email_log_uuid for easier querying
-                processing_log.email_log_uuid = email_log_uuid
-                await self.dao.add_document("email_processing_log", email_log_uuid, processing_log.__dict__)
-            
-            # Update processing log with this batch run
-            await self.dao.update_document("email_processing_log", email_log_uuid, {
-                "run_id": self.batch_manager.batch_run.run_id,
-                "processing_status": ProcessingStatus.PARSING_COMPLETED.value
-            })
-            
-            # Print detected legal entity and group UUIDs
-            legal_entity_uuid = llm_output.get("legal_entity_uuid")
-            group_uuids = llm_output.get("group_uuids", [])
-            
-            logger.info(f"Detected legal entity UUID: {legal_entity_uuid}")
-            logger.info(f"Detected group UUIDs: {group_uuids}")
-            
-            # Get legal entity details for verification
-            if legal_entity_uuid:
-                legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
-                if legal_entity:
-                    logger.info(f"Legal entity details: Name={legal_entity.get('payer_legal_name')}, Group UUID={legal_entity.get('group_uuid')}")
-                    print(f"\n\n=== DETECTED LEGAL ENTITY ===\nName: {legal_entity.get('payer_legal_name')}\nUUID: {legal_entity_uuid}\nGroup UUID: {legal_entity.get('group_uuid')}\n===========================\n\n")
-            
-            # Print the raw LLM output
-            logger.info(f"LLM OUTPUT FOR EMAIL: {llm_output}")
-            
-            # Create a serializable copy of llm_output (without PaymentAdviceLine objects)
-            def make_serializable(obj):
-                """Convert an object to a JSON serializable format."""
-                if isinstance(obj, dict):
-                    return {k: make_serializable(v) for k, v in obj.items() if not k.startswith('paymentadvice_line_')}
-                elif isinstance(obj, list):
-                    return [make_serializable(item) for item in obj]
-                elif hasattr(obj, '__dict__'):
-                    # For objects like PaymentAdviceLine, convert to dict
-                    return {"type": obj.__class__.__name__, "data": make_serializable(obj.__dict__)}
-                else:
-                    return obj
-            
-            # Create a serializable version of the output
-            serializable_output = make_serializable(llm_output)
-            
-            try:
-                print(f"\n\n=== LLM OUTPUT FOR EMAIL ===\n{json.dumps(serializable_output, indent=2)}\n===========================\n\n")
-            except TypeError as e:
-                logger.warning(f"Could not fully serialize LLM output: {e}")
-                # Fall back to a simpler representation
-                basic_output = {k: str(v) if not isinstance(v, (dict, list)) else v 
-                               for k, v in serializable_output.items() 
-                               if not k.startswith('paymentadvice_line_') and k != 'payment_advice_lines'}
-                print(f"\n\n=== LLM OUTPUT FOR EMAIL (SIMPLIFIED) ===\n{json.dumps(basic_output, indent=2)}\n===========================\n\n")
-            
-            # Store the processed output for testing
-            self.last_processed_output = llm_output
-            
-            # Store PDF text if available from email attachments
-            if 'attachments' in email_data and email_data['attachments']:
-                for attachment in email_data['attachments']:
-                    if 'text_content' in attachment and attachment.get('content_type', '').lower().endswith('pdf'):
-                        self.last_pdf_text = attachment['text_content']
-                        logger.info(f"Stored PDF text for analysis: {len(self.last_pdf_text)} characters")
-                        break
-            
-            # Create payment advice in Firestore first (similar to v1)
-            payment_advice_uuid = await self.create_payment_advice_from_llm_output(llm_output, email_log_uuid)
-            
-            # Update the llm_output with the payment_advice_uuid
-            if payment_advice_uuid:
-                llm_output['payment_advice_uuid'] = payment_advice_uuid
-                logger.info(f"Added payment_advice_uuid {payment_advice_uuid} to llm_output")
-            else:
-                # If payment advice creation failed, generate a UUID for consistency
-                logger.error("Payment advice creation failed")
-                raise ValueError("Payment advice creation failed")            
-            # Payment advice lines are already saved by PaymentProcessingServiceV2 during create_payment_advice
-            
-            # Enrich payment advice lines with BP/GL codes first
-            try:
-                logger.info(f"Enriching payment advice lines with BP/GL codes for {payment_advice_uuid}")
-                await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
-            except Exception as enrich_error:
-                logger.error(f"Error enriching payment advice lines: {str(enrich_error)}")
-                import traceback
-                logger.error(f"Account Enrichment Traceback: {traceback.format_exc()}")
-                # Continue processing - we don't want to fail the entire process for enrichment errors
-            
-            # Generate and upload SAP XLSX file for the payment advice
-            try:
-                logger.info(f"Generating SAP export for payment advice {payment_advice_uuid}")
-                url = await self.sap_export_service.process_payment_advice_export(payment_advice_uuid)
-                if url:
-                    logger.info(f"Successfully generated and uploaded SAP export: {url}")
-                    
-                    # Update email processing log with SAP_PUSHED status
-                    await self.dao.update_document("email_processing_log", email_log_uuid, {
-                        "processing_status": ProcessingStatus.SAP_EXPORT_GENERATED.value,
-                        "sap_doc_num": payment_advice_uuid  # Using payment advice UUID as SAP doc number
+            for output_idx, llm_output in enumerate(llm_outputs):
+                # Update the processing log with actual email_log_uuid if different
+                if email_log_uuid != email_id:
+                    logger.info(f"Email log UUID {email_log_uuid} differs from email ID {email_id}")
+                    await self.dao.update_document("email_processing_log", email_id, {
+                        "email_log_uuid": email_log_uuid
                     })
-                    logger.info(f"Updated email processing log {email_log_uuid} with SAP_PUSHED status")
-                else:
-                    logger.warning(f"Failed to generate or upload SAP export for payment advice {payment_advice_uuid}")
-            except Exception as sap_error:
-                logger.error(f"Error generating SAP export: {str(sap_error)}")
-                import traceback
-                logger.error(f"SAP Export Traceback: {traceback.format_exc()}")
-                # Continue processing - we don't want to fail the entire process for SAP export errors
-            
-            # If no payment advice lines found in LLM output
-            if 'paymentadvice_lines' not in llm_output or not llm_output['paymentadvice_lines']:
-                logger.warning("No payment advice lines found in LLM output")
-            
-            # Update batch run stats
-            self.batch_manager.increment_processed_count()
-            self.emails_processed += 1
-            return True
+                    # Also create a reference with the email_log_uuid for easier querying
+                    processing_log.email_log_uuid = email_log_uuid
+                    await self.dao.add_document("email_processing_log", email_log_uuid, processing_log.__dict__)
                 
+                # Update processing log with this batch run
+                await self.dao.update_document("email_processing_log", email_log_uuid, {
+                    "run_id": self.batch_manager.batch_run.run_id,
+                    "processing_status": ProcessingStatus.PARSING_COMPLETED.value
+                })
+                
+                # Print detected legal entity and group UUIDs
+                legal_entity_uuid = llm_output.get("legal_entity_uuid")
+                group_uuids = llm_output.get("group_uuids", [])
+                
+                logger.info(f"{output_idx + 1}. Detected legal entity UUID: {legal_entity_uuid}")
+                logger.info(f"{output_idx + 1}. Detected group UUIDs: {group_uuids}")
+                
+                # Get legal entity details for verification
+                if legal_entity_uuid:
+                    legal_entity = await self.dao.get_document("legal_entity", legal_entity_uuid)
+                    if legal_entity:
+                        logger.info(f"Legal entity details: Name={legal_entity.get('payer_legal_name')}, Group UUID={legal_entity.get('group_uuid')}")
+                        print(f"\n\n=== DETECTED LEGAL ENTITY ===\nName: {legal_entity.get('payer_legal_name')}\nUUID: {legal_entity_uuid}\nGroup UUID: {legal_entity.get('group_uuid')}\n===========================\n\n")
+                
+                # Print the raw LLM output
+                logger.info(f"{output_idx + 1}. LLM OUTPUT FOR EMAIL: {llm_output}")
+                
+                # Create a serializable copy of llm_output (without PaymentAdviceLine objects)
+                def make_serializable(obj):
+                    """Convert an object to a JSON serializable format."""
+                    if isinstance(obj, dict):
+                        return {k: make_serializable(v) for k, v in obj.items() if not k.startswith('paymentadvice_line_')}
+                    elif isinstance(obj, list):
+                        return [make_serializable(item) for item in obj]
+                    elif hasattr(obj, '__dict__'):
+                        # For objects like PaymentAdviceLine, convert to dict
+                        return {"type": obj.__class__.__name__, "data": make_serializable(obj.__dict__)}
+                    else:
+                        return obj
+                
+                # Create a serializable version of the output
+                serializable_output = make_serializable(llm_output)
+                
+                try:
+                    print(f"\n\n=== LLM OUTPUT FOR EMAIL ===\n{json.dumps(serializable_output, indent=2)}\n===========================\n\n")
+                except TypeError as e:
+                    logger.warning(f"Could not fully serialize LLM output: {e}")
+                    # Fall back to a simpler representation
+                    basic_output = {k: str(v) if not isinstance(v, (dict, list)) else v 
+                                for k, v in serializable_output.items() 
+                                if not k.startswith('paymentadvice_line_') and k != 'payment_advice_lines'}
+                    print(f"\n\n=== LLM OUTPUT FOR EMAIL (SIMPLIFIED) ===\n{json.dumps(basic_output, indent=2)}\n===========================\n\n")
+                
+                # Store the processed output for testing
+                self.last_processed_output = llm_output
+                
+                # Store PDF text if available from email attachments
+                if 'attachments' in email_data and email_data['attachments']:
+                    for attachment in email_data['attachments']:
+                        if 'text_content' in attachment and attachment.get('content_type', '').lower().endswith('pdf'):
+                            self.last_pdf_text = attachment['text_content']
+                            logger.info(f"Stored PDF text for analysis: {len(self.last_pdf_text)} characters")
+                            break
+                
+                # Create payment advice in Firestore first (similar to v1)
+                payment_advice_uuid = await self.create_payment_advice_from_llm_output(llm_output, email_log_uuid)
+                
+                # Update the llm_output with the payment_advice_uuid
+                if payment_advice_uuid:
+                    llm_output['payment_advice_uuid'] = payment_advice_uuid
+                    logger.info(f"Added payment_advice_uuid {payment_advice_uuid} to llm_output")
+                else:
+                    # If payment advice creation failed, generate a UUID for consistency
+                    logger.error("Payment advice creation failed")
+                    raise ValueError("Payment advice creation failed")            
+                # Payment advice lines are already saved by PaymentProcessingServiceV2 during create_payment_advice
+                
+                # Enrich payment advice lines with BP/GL codes first
+                try:
+                    logger.info(f"Enriching payment advice lines with BP/GL codes for {payment_advice_uuid}")
+                    await self.account_enrichment_service.enrich_payment_advice_lines(payment_advice_uuid)
+                except Exception as enrich_error:
+                    logger.error(f"Error enriching payment advice lines: {str(enrich_error)}")
+                    import traceback
+                    logger.error(f"Account Enrichment Traceback: {traceback.format_exc()}")
+                    # Continue processing - we don't want to fail the entire process for enrichment errors
+                
+                # Generate and upload SAP XLSX file for the payment advice
+                try:
+                    logger.info(f"Generating SAP export for payment advice {payment_advice_uuid}")
+                    url = await self.sap_export_service.process_payment_advice_export(payment_advice_uuid)
+                    if url:
+                        logger.info(f"Successfully generated and uploaded SAP export: {url}")
+                        
+                        # Update email processing log with SAP_PUSHED status
+                        await self.dao.update_document("email_processing_log", email_log_uuid, {
+                            "processing_status": ProcessingStatus.SAP_EXPORT_GENERATED.value,
+                            "sap_doc_num": payment_advice_uuid  # Using payment advice UUID as SAP doc number
+                        })
+                        logger.info(f"Updated email processing log {email_log_uuid} with SAP_PUSHED status")
+                    else:
+                        logger.warning(f"Failed to generate or upload SAP export for payment advice {payment_advice_uuid}")
+                except Exception as sap_error:
+                    logger.error(f"Error generating SAP export: {str(sap_error)}")
+                    import traceback
+                    logger.error(f"SAP Export Traceback: {traceback.format_exc()}")
+                    # Continue processing - we don't want to fail the entire process for SAP export errors
+                
+                # If no payment advice lines found in LLM output
+                if 'paymentadvice_lines' not in llm_output or not llm_output['paymentadvice_lines']:
+                    logger.warning("No payment advice lines found in LLM output")
+                
+                # Update batch run stats
+                self.batch_manager.increment_processed_count()
+                self.emails_processed += 1
+                
+            # Return success after processing all outputs
+            return True         
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error processing email: {error_msg}")

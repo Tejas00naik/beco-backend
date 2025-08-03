@@ -337,7 +337,13 @@ class EmailProcessor:
             # Process attachments or email body directly
             attachments = email_data.get("attachments", [])
             processed_attachments = 0
-            
+            #TODO: We can branch out the the HOT processor here maybe  because \
+            # this is the point where the processing splits the data into mutiplePAyment advice branches
+            #  we can add a HOT logic on basis of legal entity here itself and if hot then we can skip the rest of the flow.
+            # My plan is to split the incoming data into single lines cause each line represent a payment advice 
+            # and we can process each line independently by passing only that df into this  _process_content_for_payment_advice function
+            # so all remain the same down stream and we will basically then work as per out HOTGrooupProcess logic!
+
             # If no attachments, process the email body directly
             if not attachments and email_text_content:
                 logger.info(f"No attachments found. Processing email body directly.")
@@ -353,7 +359,7 @@ class EmailProcessor:
                 }
                 
                 # Process the email body using the common helper function
-                llm_output = await self._process_content_for_payment_advice(
+                body_output = await self._process_content_for_payment_advice(
                     email_text_content=email_text_content,
                     content_source=body_as_attachment,
                     content_text=email_text_content,
@@ -362,10 +368,16 @@ class EmailProcessor:
                 )
                 
                 # Log summary of extracted LLM data
-                self._log_llm_output_summary(llm_output, "email body")
+                self._log_llm_output_summary(body_output, "email body")
                 
                 logger.info("Successfully processed email body directly with LLM")
                 processed_attachments = 1  # Mark as processed one item
+                
+                # Initialize list with body output
+                llm_outputs = [body_output]
+            else:
+                # Initialize list to store all attachment outputs if no body processing
+                llm_outputs = []
             
             # Process each attachment if there are any
             for attachment_idx, attachment in enumerate(attachments):
@@ -377,7 +389,7 @@ class EmailProcessor:
                     attachment_text = attachment.get('text_content', '') or ''
                     
                     # Process the attachment using the common helper function
-                    llm_output = await self._process_content_for_payment_advice(
+                    attachment_output = await self._process_content_for_payment_advice(
                         email_text_content=email_text_content,
                         content_source=attachment,
                         content_text=attachment_text,
@@ -386,10 +398,10 @@ class EmailProcessor:
                     )
                     
                     # Log summary of extracted LLM data
-                    self._log_llm_output_summary(llm_output, f"attachment {attachment_filename}")
+                    self._log_llm_output_summary(attachment_output, f"attachment {attachment_filename}")
                     
-                    # Return LLM output for further processing by the calling service
-                    # The calling service will handle payment advice creation and SAP enrichment
+                    # Add to list of outputs for further processing by the calling service
+                    llm_outputs.append(attachment_output)
                     
                     processed_attachments += 1
                     
@@ -401,10 +413,11 @@ class EmailProcessor:
             # Update processing log status
             processing_log.processing_status = ProcessingStatus.LLM_READ
             await self.dao.update_document("email_processing_log", doc_id, 
-                                         {"processing_status": ProcessingStatus.LLM_READ})
+                                          {"processing_status": ProcessingStatus.LLM_READ})
             
             logger.info(f"Successfully processed email {email_log.email_log_uuid}")
-            return email_log.email_log_uuid, llm_output
+            logger.info(f"Returning {len(llm_outputs)} LLM outputs for further processing")
+            return email_log.email_log_uuid, llm_outputs
             
         except Exception as e:
             logger.error(f"Error processing email: {str(e)}")

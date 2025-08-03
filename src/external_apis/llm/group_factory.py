@@ -483,6 +483,59 @@ Here's the exact format your JSON output should follow:
             return processed_output  # Return original output on error
 
 
+class HOTGroupProcessor(GroupProcessor):
+    """HandsOnTrade-specific group processor for Excel attachments that contain multiple payment advices."""
+    
+    def get_prompt_template(self) -> str:
+        """Get the HOT-specific prompt template."""
+        # This is a placeholder - HOT processor will handle Excel files directly, not use LLM
+        return """"""
+    
+    def post_process_output(self, processed_output: Dict[str, Any]) -> Dict[str, Any]:
+        """Process HOT Excel file to extract multiple payment advices."""
+        # This method will be implemented to parse Excel and create multiple payment advices
+        # But for now, we return the input unchanged as this is a skeleton implementation
+        return processed_output
+    
+    def is_hot_excel(self, attachment: Dict[str, Any]) -> bool:
+        """Check if the attachment is a HOT Excel file that needs special processing.
+        
+        Args:
+            attachment: Attachment data dictionary
+            
+        Returns:
+            bool: True if this is a HOT Excel attachment
+        """
+        # Get filename and content type
+        filename = attachment.get('filename', '').lower()
+        content_type = attachment.get('content_type', '').lower()
+        
+        # Check if this is an Excel file
+        is_excel = (content_type in ['application/vnd.ms-excel', 
+                                   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'] or
+                   filename.endswith(('.xls', '.xlsx')))
+        
+        if not is_excel:
+            return False
+            
+        # Look for HOT-specific patterns in the filename
+        hot_indicators = ['hot', 'handson', 'hands-on', 'trade']
+        return any(indicator in filename for indicator in hot_indicators)
+    
+    async def process_excel_attachment(self, attachment: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Process a HOT Excel file and extract multiple payment advices.
+        
+        Args:
+            attachment: Attachment data dictionary
+            
+        Returns:
+            List of payment advice data dictionaries
+        """
+        # This is a placeholder - will be implemented to extract data from Excel files
+        # For now, return an empty list
+        return []
+
+
 class ZeptoGroupProcessor(GroupProcessor):
     """Zepto-specific group processor."""
     
@@ -954,6 +1007,8 @@ class GroupProcessorFactory:
         'group-amazon-12345': AmazonGroupProcessor,
         # New group UUID for Zepto (replace with actual UUID)
         'group-zepto-67890': ZeptoGroupProcessor,
+        # HOT Group processor (replace with actual UUID)
+        'group-hot-54321': HOTGroupProcessor,
     }
     
     @classmethod
