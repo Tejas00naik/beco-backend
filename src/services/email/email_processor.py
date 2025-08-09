@@ -43,48 +43,49 @@ class EmailProcessor:
         # Initialize the legal entity lookup service
         self.legal_entity_lookup = LegalEntityLookupService(dao)
         
-    def _log_llm_output_summary(self, llm_output, source_name):
+    def _log_llm_output_summary(self, one_or_more_structured_payment_advices, source_name):
         """
         Log detailed summary of extracted LLM data.
         
         Args:
-            llm_output: The LLM extraction output dictionary
+            one_or_more_structured_payment_advices: The LLM extraction output dictionary
             source_name: Name of the source ("email body" or attachment filename)
         """
-        logger.info(f"LLM extracted data for {source_name}:")
+        for each in one_or_more_structured_payment_advices:
+            logger.info(f"LLM extracted data for {source_name}:")
         
-        # Meta Table detailed logging
-        meta_table = llm_output.get('metaTable', {})
-        logger.info(f"  Meta Table:")
-        logger.info(f"    paymentAdviceNumber: {meta_table.get('paymentAdviceNumber')}")
-        logger.info(f"    paymentAdviceDate: {meta_table.get('paymentAdviceDate')}")
-        logger.info(f"    paymentAdviceAmount: {meta_table.get('paymentAdviceAmount')}")
-        logger.info(f"    payersLegalName: {meta_table.get('payersLegalName')}")
-        logger.info(f"    payeesLegalName: {meta_table.get('payeesLegalName')}")
-        
-        # Invoice Table summary
-        invoice_table = llm_output.get('invoiceTable', [])
-        logger.info(f"  Invoice Table: {len(invoice_table)} items")
-        for i, invoice in enumerate(invoice_table[:3]):  # Log first 3 invoices
-            logger.info(f"    Invoice {i+1}: {invoice.get('invoiceNumber')} - Amount: {invoice.get('totalSettlementAmount')}")
-        if len(invoice_table) > 3:
-            logger.info(f"    ... and {len(invoice_table) - 3} more invoices")
-        
-        # Other Doc Table summary
-        other_doc_table = llm_output.get('otherDocTable', [])
-        logger.info(f"  Other Doc Table: {len(other_doc_table)} items")
-        for i, doc in enumerate(other_doc_table[:3]):  # Log first 3 other docs
-            logger.info(f"    Other Doc {i+1}: {doc.get('otherDocNumber')} ({doc.get('otherDocType')}) - Amount: {doc.get('otherDocAmount')}")
-        if len(other_doc_table) > 3:
-            logger.info(f"    ... and {len(other_doc_table) - 3} more other docs")
-        
-        # Settlement Table summary
-        settlement_table = llm_output.get('settlementTable', [])
-        logger.info(f"  Settlement Table: {len(settlement_table)} items")
-        for i, settlement in enumerate(settlement_table[:3]):  # Log first 3 settlements
-            logger.info(f"    Settlement {i+1}: {settlement.get('invoiceNumber')} -> {settlement.get('settlementDocNumber')} - Amount: {settlement.get('settlementAmount')}")
-        if len(settlement_table) > 3:
-            logger.info(f"    ... and {len(settlement_table) - 3} more settlements")
+            # Meta Table detailed logging
+            meta_table = each.get('metaTable', {})
+            logger.info(f"  Meta Table:")
+            logger.info(f"    paymentAdviceNumber: {meta_table.get('paymentAdviceNumber')}")
+            logger.info(f"    paymentAdviceDate: {meta_table.get('paymentAdviceDate')}")
+            logger.info(f"    paymentAdviceAmount: {meta_table.get('paymentAdviceAmount')}")
+            logger.info(f"    payersLegalName: {meta_table.get('payersLegalName')}")
+            logger.info(f"    payeesLegalName: {meta_table.get('payeesLegalName')}")
+            
+            # Invoice Table summary
+            invoice_table = each.get('invoiceTable', [])
+            logger.info(f"  Invoice Table: {len(invoice_table)} items")
+            for i, invoice in enumerate(invoice_table[:3]):  # Log first 3 invoices
+                logger.info(f"    Invoice {i+1}: {invoice.get('invoiceNumber')} - Amount: {invoice.get('totalSettlementAmount')}")
+            if len(invoice_table) > 3:
+                logger.info(f"    ... and {len(invoice_table) - 3} more invoices")
+            
+            # Other Doc Table summary
+            other_doc_table = each.get('otherDocTable', [])
+            logger.info(f"  Other Doc Table: {len(other_doc_table)} items")
+            for i, doc in enumerate(other_doc_table[:3]):  # Log first 3 other docs
+                logger.info(f"    Other Doc {i+1}: {doc.get('otherDocNumber')} ({doc.get('otherDocType')}) - Amount: {doc.get('otherDocAmount')}")
+            if len(other_doc_table) > 3:
+                logger.info(f"    ... and {len(other_doc_table) - 3} more other docs")
+            
+            # Settlement Table summary
+            settlement_table = each.get('settlementTable', [])
+            logger.info(f"  Settlement Table: {len(settlement_table)} items")
+            for i, settlement in enumerate(settlement_table[:3]):  # Log first 3 settlements
+                logger.info(f"    Settlement {i+1}: {settlement.get('invoiceNumber')} -> {settlement.get('settlementDocNumber')} - Amount: {settlement.get('settlementAmount')}")
+            if len(settlement_table) > 3:
+                logger.info(f"    ... and {len(settlement_table) - 3} more settlements")
     
     async def _preprocess_attachment(self, attachment, attachment_idx=0, total_attachments=1):
         """
@@ -267,7 +268,7 @@ class EmailProcessor:
             
         return attachment, attachment_filename
         
-    async def _process_content_for_payment_advice(self, email_text_content, content_source, content_text, source_name, email_log):
+    async def _process_payment_advice_attachment_wise(self, email_text_content, content_source, content_text, source_name, email_log):
         """
         Process either an email body or attachment for payment advice extraction.
         
@@ -316,20 +317,22 @@ class EmailProcessor:
         logger.info(f"Using {group_processor.__class__.__name__} for processing {source_name}")
 
         logger.info(f"STEP 3: Starting LLM extraction for {source_name} using {group_processor.__class__.__name__}")
-        llm_output = await group_processor.process_payment_advice(
+        one_or_more_structured_payment_advices = await group_processor.process_payment_advice(
             attachment_text=content_text,
             email_body=email_text_content,
             attachment_obj=content_source,
+            attachment_file_format=content_source.get("content_type", "unknown")
         )
 
         # Add the legal entity and group from step 1 to the llm_output
-        if legal_entity_uuid:
-            llm_output["legal_entity_uuid"] = legal_entity_uuid
-        if group_uuid:
-            llm_output["group_uuid"] = group_uuid
+        for each in one_or_more_structured_payment_advices:
+            if legal_entity_uuid:
+                each["legal_entity_uuid"] = legal_entity_uuid
+            if group_uuid:
+                each["group_uuid"] = group_uuid
             
         logger.info(f"Successfully processed {source_name} with LLM")
-        return llm_output
+        return one_or_more_structured_payment_advices
     
     async def process_email(self, email_data: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
         """
@@ -418,19 +421,13 @@ class EmailProcessor:
             # Process attachments or email body directly
             attachments = email_data.get("attachments", [])
             processed_attachments = 0
-            #TODO: We can branch out the the HOT processor here maybe  because \
-            # this is the point where the processing splits the data into mutiplePAyment advice branches
-            #  we can add a HOT logic on basis of legal entity here itself and if hot then we can skip the rest of the flow.
-            # My plan is to split the incoming data into single lines cause each line represent a payment advice 
-            # and we can process each line independently by passing only that df into this  _process_content_for_payment_advice function
-            # so all remain the same down stream and we will basically then work as per out HOTGrooupProcess logic!
 
             # If no attachments, process the email body directly
             if not attachments and email_text_content:
                 logger.info(f"No attachments found. Processing email body directly.")
 
                 # Process the email body using the common helper function
-                body_output = await self._process_content_for_payment_advice(
+                one_or_more_structured_payment_advices = await self._process_payment_advice_attachment_wise(
                     email_text_content=email_text_content,
                     content_source="",
                     content_text="",
@@ -439,16 +436,16 @@ class EmailProcessor:
                 )
                 
                 # Log summary of extracted LLM data
-                self._log_llm_output_summary(body_output, "email_body")
+                self._log_llm_output_summary(one_or_more_structured_payment_advices, "email_body")
                 
                 logger.info("Successfully processed email body directly with LLM")
                 processed_attachments = 1  # Mark as processed one item
                 
                 # Initialize list with body output
-                llm_outputs = [body_output]
+                all_structured_payment_advices = [one_or_more_structured_payment_advices]
             else:
                 # Initialize list to store all attachment outputs if no body processing
-                llm_outputs = []
+                all_structured_payment_advices = []
             
             # Process each attachment if there are any
             for attachment_idx, attachment in enumerate(attachments):
@@ -460,7 +457,7 @@ class EmailProcessor:
                     attachment_text = attachment.get('text_content', '') or ''
                     
                     # Process the attachment using the common helper function
-                    attachment_output = await self._process_content_for_payment_advice(
+                    one_or_more_structured_payment_advices = await self._process_payment_advice_attachment_wise(
                         email_text_content=email_text_content,
                         content_source=attachment,
                         content_text=attachment_text,
@@ -469,10 +466,10 @@ class EmailProcessor:
                     )
                     
                     # Log summary of extracted LLM data
-                    self._log_llm_output_summary(attachment_output, f"attachment {attachment_filename}")
+                    self._log_llm_output_summary(one_or_more_structured_payment_advices, f"attachment {attachment_filename}")
                     
                     # Add to list of outputs for further processing by the calling service
-                    llm_outputs.append(attachment_output)
+                    all_structured_payment_advices.extend(one_or_more_structured_payment_advices)
                     
                     processed_attachments += 1
                     
@@ -487,8 +484,8 @@ class EmailProcessor:
                                           {"processing_status": ProcessingStatus.LLM_READ})
             
             logger.info(f"Successfully processed email {email_log.email_log_uuid}")
-            logger.info(f"Returning {len(llm_outputs)} LLM outputs for further processing")
-            return email_log.email_log_uuid, llm_outputs
+            logger.info(f"Returning {len(all_structured_payment_advices)} structured payment advices for further processing")
+            return email_log.email_log_uuid, all_structured_payment_advices
             
         except Exception as e:
             logger.error(f"Error processing email: {str(e)}")

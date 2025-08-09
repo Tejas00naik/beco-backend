@@ -40,3 +40,6 @@ SHEETS_CREDENTIALS_PATH = "secrets/sheets-service-account.json"
 MONITORING_SHEET_ID = "1dhE6OCIBdoF5BrTGF1zHdEN2ReqXcC0OwdjTJefi8UI"
 MONITORING_SHEET_RANGE = "A:J"  # Range to use for the monitoring sheet
 SAP_EXPORT_BUCKET = "beco-exported-files"  # GCS bucket for SAP exports
+
+
+CLIENT_ID = "KWICK LIVING (I) PRIVATE LIMITED"

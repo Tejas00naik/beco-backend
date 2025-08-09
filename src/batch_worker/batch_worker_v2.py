@@ -132,7 +132,7 @@ class BatchWorkerV2:
         self.monitoring_service = MonitoringService(dao=self.dao)
         
         # Initialize the payment processing service V2 for Zepto (no legacy repos)
-        self.payment_service = PaymentAdviceDbLogger(
+        self.payment_advice_db_saver = PaymentAdviceDbLogger(
             payment_advice_repo=self.payment_advice_repo,
             dao=self.dao  # Pass DAO for direct payment advice line operations
         )
@@ -240,7 +240,7 @@ class BatchWorkerV2:
                     logger.warning("Cannot perform duplicate check: Missing legal entity, payment advice number, or date")
             
             # Use payment service to process LLM output with correct parameter order
-            payment_advice_uuid = await self.payment_service.create_payment_advice(
+            payment_advice_uuid = await self.payment_advice_db_saver.create_payment_advice(
                 email_log_uuid=email_log_uuid,
                 legal_entity_uuid=legal_entity_uuid,
                 group_uuids=group_uuids,

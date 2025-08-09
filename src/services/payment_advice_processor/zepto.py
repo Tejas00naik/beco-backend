@@ -220,6 +220,7 @@ class ZeptoGroupProcessor(GroupProcessor):
                 elif doc_type.lower() == "bank receipt":
                     mapped_doc_type = "Bank receipt"  # Per matrix: Bank receipt
                     ref_invoice_no = ""  # Per matrix: "-"
+                    doc_number = payment_advice_number
                     ref_1 = doc_number  # Per matrix: Doc number from this table itself
                     
                     # Set Ref 2 same as Ref 1 per matrix
@@ -267,8 +268,8 @@ class ZeptoGroupProcessor(GroupProcessor):
                     "doc_type": mapped_doc_type,
                     "doc_number": doc_number,
                     "ref_invoice_no": ref_invoice_no,
-                    "ref_1": ref_1,
-                    "ref_2": ref_2,
+                    "ref_1": ref_2,
+                    "ref_2": ref_1,
                     "ref_3": ref_3,
                     "amount": abs_payment_amt,  # Always store as positive value
                     "dr_cr": dr_cr,
@@ -283,6 +284,8 @@ class ZeptoGroupProcessor(GroupProcessor):
             # Add TDS entry if TDS amounts exist
             # From matrix: "Sum (all amounts in TDS columns against type of document 'Invoice Payment') - Sum (all the amounts in TDS columns against other than 'Invoice payment')"
             tds_net = tds_invoice_payment_total - tds_other_total
+            #clamping tds_net to 2 decimal places
+            tds_net = round(tds_net, 2)
             if tds_net != 0:
                 # Per matrix: TDS special handling
                 doc_number = payment_advice_number if payment_advice_number else ""  # Payment advice no. from meta table
@@ -386,7 +389,7 @@ class ZeptoGroupProcessor(GroupProcessor):
             logger.error(f"Traceback: {traceback.format_exc()}")
             return processed_output  # Return original output on error
 
-    async def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any], attachment_file_format: str) -> Dict[str, Any]:
         """
         Process payment advice using LLM extraction with Zepto-specific logic.
         
@@ -394,6 +397,7 @@ class ZeptoGroupProcessor(GroupProcessor):
             attachment_text: Text content of the attachment
             email_body: Email body text for additional context
             attachment_obj: Dictionary with attachment metadata
+            attachment_file_format: Format of the attachment file
             
         Returns:
             List of processed payment advice dictionaries
@@ -443,7 +447,7 @@ class ZeptoGroupProcessor(GroupProcessor):
             processed_output = self.post_process_output(processed_output)
             
             # Return as a list since we might have multiple payment advices
-            return processed_output if processed_output else None
+            return [processed_output]
             
         except Exception as e:
             error_type = type(e).__name__

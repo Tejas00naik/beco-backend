@@ -196,7 +196,7 @@ ZEPTO_PROMPT = f"""
     Extract the following fields from the header section:
 
     Settlement Date: Value beside 'Payment Date'
-    Payment Advice Number: Value beside 'Payment Doc' (fifth line item in the header). Do not use 'Payment Ref No.'
+    Payment Advice Number: Value beside ‘Payment Ref No’ (second line item in the header). Do not use ‘Payment Doc’
     Payer's Name: Topmost entity name on the document
     Payee's Legal Name: Value beside 'Payee' (strip internal codes if any)
     Return this as a JSON object with key-value pairs.
@@ -231,7 +231,7 @@ ZEPTO_PROMPT = f"""
 
     The Meta Table should be a single JSON object with key '{LLM_META_TABLE_KEY}' and should contain:
     "{META_PAYMENT_ADVICE_DATE}": Value beside 'Payment Date'
-    "{META_PAYMENT_ADVICE_NUMBER}": Value beside 'Payment Doc'
+    "{META_PAYMENT_ADVICE_NUMBER}": Value beside 'Payment Ref No'
     "{META_PAYER_LEGAL_NAME}": Topmost entity name on the document
     "{META_PAYEE_LEGAL_NAME}": Value beside 'Payee'
 

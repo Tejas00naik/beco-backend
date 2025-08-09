@@ -96,19 +96,27 @@ class SAPExportService:
         if isinstance(payment_date, str):
             try:
                 # Try multiple date formats since data in Firestore might be in different formats
-                # First try YYYY-MM-DD format
+                # First try ISO format with timezone (common from HOT Excel processor)
                 try:
-                    payment_date = datetime.strptime(payment_date, "%Y-%m-%d").date()
-                    logger.info(f"Converted payment_date from YYYY-MM-DD format: {payment_date}")
-                except ValueError:
-                    # Try DD/MM/YYYY format
+                    # Handle ISO format with timezone (e.g., "2025-06-27 00:00:00+00:00")
+                    import dateutil.parser
+                    payment_date = dateutil.parser.parse(payment_date).date()
+                    logger.info(f"Converted payment_date from ISO format: {payment_date}")
+                except (ValueError, ImportError):
+                    # Fallback to standard formats if dateutil is not available or fails
                     try:
-                        payment_date = datetime.strptime(payment_date, "%d/%m/%Y").date()
-                        logger.info(f"Converted payment_date from DD/MM/YYYY format: {payment_date}")
+                        # Try YYYY-MM-DD format
+                        payment_date = datetime.strptime(payment_date, "%Y-%m-%d").date()
+                        logger.info(f"Converted payment_date from YYYY-MM-DD format: {payment_date}")
                     except ValueError:
-                        # Try MM/DD/YYYY format as last resort
-                        payment_date = datetime.strptime(payment_date, "%m/%d/%Y").date()
-                        logger.info(f"Converted payment_date from MM/DD/YYYY format: {payment_date}")
+                        # Try DD/MM/YYYY format
+                        try:
+                            payment_date = datetime.strptime(payment_date, "%d/%m/%Y").date()
+                            logger.info(f"Converted payment_date from DD/MM/YYYY format: {payment_date}")
+                        except ValueError:
+                            # Try MM/DD/YYYY format as last resort
+                            payment_date = datetime.strptime(payment_date, "%m/%d/%Y").date()
+                            logger.info(f"Converted payment_date from MM/DD/YYYY format: {payment_date}")
             except Exception as e:
                 logger.warning(f"Failed to parse payment date: {payment_date}, {str(e)}")
                 payment_date = None

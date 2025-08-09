@@ -6,7 +6,7 @@ as defined in the project documentation.
 """
 from datetime import datetime, date
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, fields
 from uuid import uuid4
 import enum
 
@@ -60,6 +60,21 @@ class BatchRunStatus(str, enum.Enum):
 class BaseModel:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
+
+    def to_dict(self):
+        def _norm(x):
+            if isinstance(x, enum.Enum):          # Enums -> their value
+                return x.value
+            if isinstance(x, (datetime, date)):   # dates -> ISO 8601 strings
+                return x.isoformat()
+            if is_dataclass(x):
+                return {f.name: _norm(getattr(x, f.name)) for f in fields(x)}
+            if isinstance(x, dict):
+                return {k: _norm(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [_norm(i) for i in x]
+            return x
+        return _norm(self)
 
 
 # Core Master-Data Schema models

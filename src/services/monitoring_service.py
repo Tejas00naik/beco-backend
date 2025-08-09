@@ -76,7 +76,8 @@ class MonitoringService:
                         "amount": payment_advice.get("amount", 0),
                         "sap_export_status": payment_advice.get("sap_export_status", "Pending"),
                         "sap_export_url": payment_advice.get("sap_export_url", ""),
-                        "processed_at": payment_advice.get("created_at")
+                        "processed_at": payment_advice.get("created_at"),
+                        "payment_advice_date": payment_advice.get("payment_advice_date", "")
                     }
                     monitoring_entries.append(entry)
             

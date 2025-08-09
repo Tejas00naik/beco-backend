@@ -23,14 +23,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Zepto legal entity UUID (should match what's already in Firestore)
-ZEPTO_LEGAL_ENTITY_UUID = "kiranakart-technologies-12345"
+ZEPTO_LEGAL_ENTITY_UUID = "handsontrade-private-limited-12345"
 
 # BP account for Zepto
 ZEPTO_BP_ACCOUNT = {
     "account_uuid": str(uuid4()),
-    "account_name": "KIRANAKART TECHNOLOGIES PRIVATE LIMITED",
+    "account_name": "HandsOnTrade Private Limited",
     "account_type": "BP",
-    "sap_account_id": "BP10001",  # Sample BP code - change as needed
+    "sap_account_id": "HOT1212",  # Sample BP code - change as needed
     "legal_entity_uuid": ZEPTO_LEGAL_ENTITY_UUID,
     "is_active": True,
     "is_tds_account": False

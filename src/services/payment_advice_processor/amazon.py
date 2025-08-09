@@ -27,7 +27,7 @@ class AmazonGroupProcessor(GroupProcessor):
         """Get the Amazon-specific prompt template."""
         return AMAZON_PROMPT
     
-    async def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any], attachment_file_format: str) -> Dict[str, Any]:
         """
         Process payment advice using LLM extraction with Amazon-specific logic.
         
@@ -35,6 +35,7 @@ class AmazonGroupProcessor(GroupProcessor):
             attachment_text: Text content of the attachment
             email_body: Email body text for additional context
             attachment_obj: Dictionary with attachment metadata
+            attachment_file_format: Format of the attachment file
             
         Returns:
             List of processed payment advice dictionaries

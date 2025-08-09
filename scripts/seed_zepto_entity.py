@@ -22,17 +22,17 @@ logger = logging.getLogger(__name__)
 
 # Zepto group
 ZEPTO_GROUP = {
-    "group_uuid": "group-zepto-67890",
-    "group_name": "Zepto Group"
+    "group_uuid": "group-hot-54321",
+    "group_name": "HandsOnTrade Group"
 }
 
 # Zepto legal entity with the exact name matching what appears in the PDF
 ZEPTO_LEGAL_ENTITY = {
-    "legal_entity_uuid": "kiranakart-technologies-12345",
-    "legal_entity_name": "KIRANAKART TECHNOLOGIES PRIVATE LIMITED",
-    "group_uuid": "group-zepto-67890",
+    "legal_entity_uuid": "handsontrade-private-limited-12345",
+    "legal_entity_name": "HandsOnTrade Private Limited",
+    "group_uuid": "group-hot-54321",
     # Additional identifiers to help with matching
-    "alternate_names": ["Kiranakart Technologies", "Kiranakart"]
+    "alternate_names": ["HandsOnTrade", "HandsOnTrade Private Limited"]
 }
 
 async def seed_zepto_entity():

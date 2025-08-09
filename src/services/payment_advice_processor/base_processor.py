@@ -8,7 +8,7 @@ class GroupProcessor(ABC):
     """Abstract base class for group-specific processing logic."""
     
     @abstractmethod
-    def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any]) -> Dict[str, Any]:
+    def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any], attachment_file_format: str) -> Dict[str, Any]:
         """
         Process the payment advice.
         
@@ -16,6 +16,7 @@ class GroupProcessor(ABC):
             attachment_text: Text content of the attachment
             email_body: Email body text
             attachment_obj: Dictionary with attachment metadata
+            attachment_file_format: Format of the attachment file
             
         Returns:
             Processed payment advice dictionary

@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 class DefaultGroupProcessor(GroupProcessor):
     """Default group processor when no specific group is identified."""
     
-    def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any]) -> Dict[str, Any]:
+    def process_payment_advice(self, attachment_text: str, email_body: str, attachment_obj: Dict[str, Any], attachment_file_format: str) -> Dict[str, Any]:
         """Process the payment advice."""
         return None
         
